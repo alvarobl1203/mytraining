@@ -11,16 +11,10 @@ import OnboardingScreen from '@/screens/OnboardingScreen';
 import { useAuth } from '@/hooks/useAuth';
 import { Loader2 } from 'lucide-react';
 
-const SCREENS: Record<TabId, () => JSX.Element> = {
-  train: TrainScreen,
-  routines: RoutinesScreen,
-  activity: ActivityScreen,
-  progress: ProgressScreen,
-  profile: ProfileScreen,
-};
-
 export default function App() {
   const [tab, setTab] = useState<TabId>('train');
+  const [preselectedRoutineId, setPreselectedRoutineId] = useState<string | null>(null);
+  const [preselectedRoutineName, setPreselectedRoutineName] = useState<string | null>(null);
   const { session, profile, loading, needsOnboarding, refreshProfile } = useAuth();
 
   if (loading) {
@@ -44,7 +38,11 @@ export default function App() {
     );
   }
 
-  const Screen = SCREENS[tab];
+  function handleStartWorkout(routineId: string, routineName: string) {
+    setPreselectedRoutineId(routineId);
+    setPreselectedRoutineName(routineName);
+    setTab('train');
+  }
 
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col">
@@ -55,7 +53,20 @@ export default function App() {
       </header>
 
       <main className="flex-1 mx-auto w-full max-w-md px-5 pb-24">
-        <Screen />
+        {tab === 'train' && (
+          <TrainScreen
+            preselectedRoutineId={preselectedRoutineId}
+            preselectedRoutineName={preselectedRoutineName}
+            onClearPreselect={() => {
+              setPreselectedRoutineId(null);
+              setPreselectedRoutineName(null);
+            }}
+          />
+        )}
+        {tab === 'routines' && <RoutinesScreen onStartWorkout={handleStartWorkout} />}
+        {tab === 'activity' && <ActivityScreen />}
+        {tab === 'progress' && <ProgressScreen />}
+        {tab === 'profile' && <ProfileScreen />}
       </main>
 
       <NavBar active={tab} onChange={setTab} />
