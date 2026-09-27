@@ -12,9 +12,10 @@ import {
   Square,
   Plus,
   Search,
+  Target,
 } from 'lucide-react';
 import { useWorkout, type SessionWithSets } from '@/hooks/useWorkout';
-import { useRoutines } from '@/hooks/useRoutines';
+import { useRoutines, type RoutineWithExercises } from '@/hooks/useRoutines';
 import { useExercises } from '@/hooks/useExercises';
 import type { Exercise } from '@/types/exercise';
 import type { Technique, DayOfWeek } from '@/types/routine';
@@ -223,8 +224,14 @@ interface ActiveWorkoutProps {
 }
 
 function ActiveWorkout({ session, onAddSet, onDeleteSet, onFinish, onCancel }: ActiveWorkoutProps) {
+  const { routines } = useRoutines();
   const [showAddExercise, setShowAddExercise] = useState(false);
   const [activeExercise, setActiveExercise] = useState<Exercise | null>(null);
+  const [showGuidance, setShowGuidance] = useState(true);
+
+  const linkedRoutine = session.routine_id
+    ? routines.find((r) => r.id === session.routine_id) as RoutineWithExercises | undefined
+    : undefined;
   const [weight, setWeight] = useState('');
   const [reps, setReps] = useState('');
   const [rir, setRir] = useState('0');
@@ -378,6 +385,68 @@ function ActiveWorkout({ session, onAddSet, onDeleteSet, onFinish, onCancel }: A
         </div>
       )}
 
+      {/* Routine guidance */}
+      {linkedRoutine && linkedRoutine.routine_exercises.length > 0 && showGuidance && (
+        <div className="bg-zinc-900 border border-blue-500/20 rounded-2xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Target size={14} className="text-cyan-400" />
+              <h3 className="text-xs font-bold text-white">Plan de la rutina</h3>
+            </div>
+            <button
+              onClick={() => setShowGuidance(false)}
+              className="text-[10px] text-zinc-500 hover:text-white transition-colors"
+            >
+              Ocultar
+            </button>
+          </div>
+          <div className="space-y-1.5">
+            {linkedRoutine.routine_exercises.map((re, idx) => {
+              const loggedCount = (setsByExercise[re.exercise_id] || []).length;
+              const isDone = loggedCount >= re.target_sets;
+              return (
+                <div
+                  key={re.id}
+                  className={`flex items-center gap-2 rounded-lg px-3 py-2 transition-colors ${
+                    isDone
+                      ? 'bg-green-950/30 border border-green-800/30'
+                      : loggedCount > 0
+                      ? 'bg-blue-950/30 border border-blue-800/30'
+                      : 'bg-zinc-950/50 border border-zinc-800/30'
+                  }`}
+                >
+                  <span className="text-[10px] font-bold text-zinc-600 w-5">{idx + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-white truncate">{re.exercises.name}</p>
+                    <p className="text-[10px] text-zinc-500">
+                      {re.target_sets}x{re.target_reps} · RIR {re.target_rir} · {re.rest_seconds}s
+                      {re.technique !== 'Normal' && ` · ${re.technique}`}
+                    </p>
+                  </div>
+                  <span className={`text-[10px] font-bold shrink-0 ${
+                    isDone ? 'text-green-400' : loggedCount > 0 ? 'text-cyan-400' : 'text-zinc-600'
+                  }`}>
+                    {loggedCount}/{re.target_sets}
+                  </span>
+                  {!isDone && loggedCount === 0 && (
+                    <button
+                      onClick={() => {
+                        setActiveExercise(re.exercises);
+                        setShowAddExercise(false);
+                      }}
+                      className="p-1 rounded text-cyan-400 hover:bg-cyan-500/10 transition-colors shrink-0"
+                      title="Registrar este ejercicio"
+                    >
+                      <Plus size={12} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Logged sets grouped by exercise */}
       {Object.entries(setsByExercise).length > 0 && (
         <div className="space-y-3">
@@ -484,7 +553,7 @@ function ActiveWorkout({ session, onAddSet, onDeleteSet, onFinish, onCancel }: A
             </div>
 
             <div>
-              <label className="text-[10px] font-medium text-zinc-400 mb-1 block">Tecnica</label>
+              <label className="text-[10px] font-medium text-zinc-400 mb-1 block">Técnica</label>
               <div className="grid grid-cols-3 gap-1.5">
                 {TECHNIQUES.map((t) => (
                   <button

@@ -11,7 +11,6 @@ import {
   Play,
   Search,
   Library,
-  ClipboardList,
 } from 'lucide-react';
 import { useRoutines, type RoutineWithExercises } from '@/hooks/useRoutines';
 import { useExercises } from '@/hooks/useExercises';
