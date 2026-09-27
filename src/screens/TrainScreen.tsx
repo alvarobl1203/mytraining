@@ -97,7 +97,7 @@ export default function TrainScreen({
       {/* Today's routine highlight */}
       {(() => {
         const todayName = DAYS_OF_WEEK[(new Date().getDay() + 6) % 7] as DayOfWeek;
-        const todayRoutines = routines.filter((r) => r.day_of_week === todayName && r.routine_exercises.length > 0);
+        const todayRoutines = routines.filter((r) => (r.days_of_week || []).includes(todayName) && r.routine_exercises.length > 0);
         if (todayRoutines.length === 0) return null;
         return (
           <div className="bg-gradient-to-r from-blue-500/15 to-cyan-500/10 border border-blue-500/30 rounded-2xl p-4">
@@ -144,7 +144,7 @@ export default function TrainScreen({
                 <div className="text-left">
                   <p className="text-xs font-medium text-white">{r.name}</p>
                   <p className="text-[10px] text-zinc-500">
-                    {r.day_of_week} · {r.routine_exercises.length} ejercicios
+                    {(r.days_of_week || []).join(', ')} · {r.routine_exercises.length} ejercicios
                   </p>
                 </div>
                 <Play size={14} className="text-cyan-400" />
@@ -186,7 +186,7 @@ export default function TrainScreen({
                 <option value="">Entrenamiento libre</option>
                 {routines.map((r) => (
                   <option key={r.id} value={r.id}>
-                    {r.name} ({r.day_of_week})
+                    {r.name} ({(r.days_of_week || []).join(', ')})
                   </option>
                 ))}
               </select>

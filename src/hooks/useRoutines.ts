@@ -20,7 +20,7 @@ export function useRoutines() {
       .select(
         `*, routine_exercises ( *, exercises ( * ) )`
       )
-      .order('day_of_week')
+      .order('created_at', { ascending: false })
       .order('order_index', { referencedTable: 'routine_exercises' });
 
     if (fetchError) {
@@ -38,10 +38,10 @@ export function useRoutines() {
   }, [fetchRoutines]);
 
   const createRoutine = useCallback(
-    async (name: string, dayOfWeek: DayOfWeek, description: string) => {
+    async (name: string, daysOfWeek: DayOfWeek[], description: string) => {
       const { data, error: insertError } = await supabase
         .from('routines')
-        .insert({ name, day_of_week: dayOfWeek, description })
+        .insert({ name, days_of_week: daysOfWeek, description })
         .select()
         .single();
       if (insertError) throw insertError;
@@ -49,6 +49,54 @@ export function useRoutines() {
       return data as Routine;
     },
     [fetchRoutines]
+  );
+
+  const updateRoutine = useCallback(
+    async (
+      id: string,
+      updates: { name?: string; description?: string; days_of_week?: DayOfWeek[] }
+    ) => {
+      const { error: updateError } = await supabase
+        .from('routines')
+        .update(updates)
+        .eq('id', id);
+      if (updateError) throw updateError;
+      await fetchRoutines();
+    },
+    [fetchRoutines]
+  );
+
+  const duplicateRoutine = useCallback(
+    async (id: string) => {
+      const routine = routines.find((r) => r.id === id);
+      if (!routine) return;
+      const { data, error: insertError } = await supabase
+        .from('routines')
+        .insert({
+          name: `${routine.name} (copia)`,
+          description: routine.description,
+          days_of_week: routine.days_of_week,
+        })
+        .select()
+        .single();
+      if (insertError) throw insertError;
+      const newRoutine = data as Routine;
+      for (const re of routine.routine_exercises) {
+        await supabase.from('routine_exercises').insert({
+          routine_id: newRoutine.id,
+          exercise_id: re.exercise_id,
+          order_index: re.order_index,
+          target_sets: re.target_sets,
+          target_reps: re.target_reps,
+          target_rir: re.target_rir,
+          rest_seconds: re.rest_seconds,
+          technique: re.technique,
+          notes: re.notes,
+        });
+      }
+      await fetchRoutines();
+    },
+    [routines, fetchRoutines]
   );
 
   const deleteRoutine = useCallback(
@@ -95,6 +143,27 @@ export function useRoutines() {
     [fetchRoutines]
   );
 
+  const updateRoutineExercise = useCallback(
+    async (
+      routineExerciseId: string,
+      opts: {
+        target_sets?: number;
+        target_reps?: string;
+        target_rir?: number;
+        rest_seconds?: number;
+        technique?: Technique;
+      }
+    ) => {
+      const { error: updateError } = await supabase
+        .from('routine_exercises')
+        .update(opts)
+        .eq('id', routineExerciseId);
+      if (updateError) throw updateError;
+      await fetchRoutines();
+    },
+    [fetchRoutines]
+  );
+
   const removeExerciseFromRoutine = useCallback(
     async (routineExerciseId: string) => {
       const { error: deleteError } = await supabase
@@ -107,14 +176,29 @@ export function useRoutines() {
     [fetchRoutines]
   );
 
+  const reorderExercises = useCallback(
+    async (routineId: string, orderedIds: string[]) => {
+      const updates = orderedIds.map((id, idx) =>
+        supabase.from('routine_exercises').update({ order_index: idx }).eq('id', id)
+      );
+      await Promise.all(updates);
+      await fetchRoutines();
+    },
+    [fetchRoutines]
+  );
+
   return {
     routines,
     loading,
     error,
     createRoutine,
+    updateRoutine,
+    duplicateRoutine,
     deleteRoutine,
     addExerciseToRoutine,
+    updateRoutineExercise,
     removeExerciseFromRoutine,
+    reorderExercises,
     refetch: fetchRoutines,
   };
 }

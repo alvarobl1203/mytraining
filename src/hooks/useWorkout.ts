@@ -6,6 +6,12 @@ export interface SessionWithSets extends WorkoutSession {
   workout_sets: WorkoutSetWithExercise[];
 }
 
+export interface CardioSetData {
+  duration_min?: number;
+  distance_km?: number;
+  kcal?: number;
+}
+
 export function useWorkout() {
   const [activeSession, setActiveSession] = useState<SessionWithSets | null>(null);
   const [sessions, setSessions] = useState<SessionWithSets[]>([]);
@@ -38,9 +44,16 @@ export function useWorkout() {
   const startSession = useCallback(
     async (routineId: string | null, name: string) => {
       startTimeRef.current = Date.now();
+      const now = new Date().toISOString();
       const { data, error: insertError } = await supabase
         .from('workout_sessions')
-        .insert({ routine_id: routineId, name, date: new Date().toISOString().split('T')[0], completed: false })
+        .insert({
+          routine_id: routineId,
+          name,
+          date: now.split('T')[0],
+          completed: false,
+          started_at: now,
+        })
         .select()
         .single();
       if (insertError) throw insertError;
@@ -60,7 +73,8 @@ export function useWorkout() {
       reps: number,
       rir: number,
       technique: Technique,
-      restSeconds: number
+      restSeconds: number,
+      cardio?: CardioSetData
     ) => {
       const { data, error: insertError } = await supabase
         .from('workout_sets')
@@ -74,6 +88,9 @@ export function useWorkout() {
           technique,
           rest_seconds: restSeconds,
           completed: true,
+          duration_min: cardio?.duration_min ?? 0,
+          distance_km: cardio?.distance_km ?? 0,
+          kcal: cardio?.kcal ?? 0,
         })
         .select(`*, exercises ( * )`)
         .single();
