@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Fondo -->
+  <rect width="512" height="512" rx="112" fill="#09090b"/>
+
+  <!-- Barra central de la mancuerna -->
+  <rect x="130" y="240" width="252" height="32" rx="16" fill="url(#g)"/>
+
+  <!-- Disco izquierdo interior -->
+  <rect x="96" y="196" width="42" height="120" rx="14" fill="url(#g2)"/>
+  <!-- Disco izquierdo exterior -->
+  <rect x="60" y="216" width="34" height="80" rx="12" fill="url(#g)"/>
+
+  <!-- Disco derecho interior -->
+  <rect x="374" y="196" width="42" height="120" rx="14" fill="url(#g2)"/>
+  <!-- Disco derecho exterior -->
+  <rect x="418" y="216" width="34" height="80" rx="12" fill="url(#g)"/>
+
+  <!-- Brillo sutil arriba de la barra -->
+  <rect x="150" y="244" width="212" height="6" rx="3" fill="#ffffff" opacity="0.35"/>
+
+  <!-- Rayo (guño a "MyTraining ⚡") centrado encima -->
+  <path
+    d="M256 96 L286 172 L262 172 L292 248 L222 176 L248 176 L214 96 Z"
+    fill="url(#g2)"
+    opacity="0.9"
+  />
+</svg>
