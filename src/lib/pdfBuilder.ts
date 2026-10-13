@@ -1,35 +1,57 @@
+// ===========================================================================
+// MyTraining — Generación de PDFs (Analíticas + Planes)
+// ===========================================================================
+// v2 — Reescritura completa:
+//   - Logo real desde public/icon.svg convertido a PNG con canvas
+//   - Desglose serie-a-serie por ejercicio (peso × reps · RIR · 1RM)
+//   - Jerarquía visual mejorada: secciones, subtítulos y cards
+//   - Paginación robusta con cabecera/continuación
+// ===========================================================================
+
 import { jsPDF } from 'jspdf';
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Tipos auxiliares
+// ---------------------------------------------------------------------------
+type RGB = [number, number, number];
+
+// ---------------------------------------------------------------------------
 // Paleta (coincide con la app)
-// ===========================================================================
+// ---------------------------------------------------------------------------
 const C = {
-  bg: [9, 9, 11] as [number, number, number],
-  surface: [24, 24, 27] as [number, number, number],
-  surfaceAlt: [18, 18, 20] as [number, number, number],
-  border: [63, 63, 70] as [number, number, number],
-  text: [244, 244, 245] as [number, number, number],
-  textMuted: [161, 161, 170] as [number, number, number],
-  textDim: [113, 113, 122] as [number, number, number],
-  accent: [34, 211, 238] as [number, number, number],
-  blue: [59, 130, 246] as [number, number, number],
-  amber: [251, 191, 36] as [number, number, number],
-  red: [239, 68, 68] as [number, number, number],
-  green: [34, 197, 94] as [number, number, number],
+  bg: [9, 9, 11] as RGB,
+  surface: [24, 24, 27] as RGB,
+  surfaceAlt: [18, 18, 20] as RGB,
+  surfaceCard: [16, 16, 18] as RGB,
+  border: [63, 63, 70] as RGB,
+  borderSoft: [39, 39, 42] as RGB,
+  text: [244, 244, 245] as RGB,
+  textMuted: [161, 161, 170] as RGB,
+  textDim: [113, 113, 122] as RGB,
+  accent: [34, 211, 238] as RGB,
+  blue: [59, 130, 246] as RGB,
+  amber: [251, 191, 36] as RGB,
+  amberDim: [42, 28, 10] as RGB,
+  red: [239, 68, 68] as RGB,
+  green: [34, 197, 94] as RGB,
 };
 
 const A4_W = 595;
 const A4_H = 842;
 const MARGIN = 40;
 const CONTENT_W = A4_W - MARGIN * 2;
+const PAGE_BOTTOM = A4_H - 40; // margen inferior seguro antes del footer
 
-function setFill(pdf: jsPDF, c: [number, number, number]) {
+// ---------------------------------------------------------------------------
+// Helpers de color
+// ---------------------------------------------------------------------------
+function setFill(pdf: jsPDF, c: RGB) {
   pdf.setFillColor(c[0], c[1], c[2]);
 }
-function setText(pdf: jsPDF, c: [number, number, number]) {
+function setText(pdf: jsPDF, c: RGB) {
   pdf.setTextColor(c[0], c[1], c[2]);
 }
-function setStroke(pdf: jsPDF, c: [number, number, number]) {
+function setStroke(pdf: jsPDF, c: RGB) {
   pdf.setDrawColor(c[0], c[1], c[2]);
 }
 
@@ -53,24 +75,89 @@ function newPage(pdf: jsPDF): number {
   return 60;
 }
 
-// ===========================================================================
-// Cabecera de página con logo textual
-// ===========================================================================
-function drawHeader(pdf: jsPDF, title: string, subtitle?: string): number {
-  // Logo
-  setFill(pdf, C.blue);
-  pdf.roundedRect(MARGIN, 40, 28, 28, 8, 8, 'F');
-  setText(pdf, [255, 255, 255]);
-  pdf.setFontSize(16);
-  pdf.setFont('helvetica', 'bold');
-  pdf.text('⚡', MARGIN + 7, 59);
+// ---------------------------------------------------------------------------
+// Logo: carga public/icon.svg y lo convierte a PNG base64 (cacheado)
+// ---------------------------------------------------------------------------
+let cachedLogoDataUrl: string | null = null;
 
-  // Título "My Training"
-  pdf.setFontSize(16);
+export async function loadLogoDataUrl(): Promise<string | null> {
+  if (cachedLogoDataUrl) return cachedLogoDataUrl;
+  try {
+    const res = await fetch('/icon.svg', { cache: 'force-cache' });
+    if (!res.ok) return null;
+    const svgText = await res.text();
+
+    // Blob -> ObjectURL -> Image -> Canvas -> PNG base64
+    const svgBlob = new Blob([svgText], {
+      type: 'image/svg+xml;charset=utf-8',
+    });
+    const url = URL.createObjectURL(svgBlob);
+
+    const img = new Image();
+    img.decoding = 'sync';
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error('No se pudo cargar el logo'));
+      img.src = url;
+    });
+
+    const size = 256; // resolución alta para que se vea nítido en el PDF
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      URL.revokeObjectURL(url);
+      return null;
+    }
+    ctx.drawImage(img, 0, 0, size, size);
+    URL.revokeObjectURL(url);
+
+    cachedLogoDataUrl = canvas.toDataURL('image/png');
+    return cachedLogoDataUrl;
+  } catch {
+    // Si falla, el PDF se genera sin logo (fallback textual)
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cabecera con logo real
+// ---------------------------------------------------------------------------
+function drawHeader(
+  pdf: jsPDF,
+  logoDataUrl: string | null,
+  title: string,
+  subtitle?: string,
+): number {
+  const logoSize = 30;
+  const logoY = 40;
+
+  if (logoDataUrl) {
+    try {
+      pdf.addImage(logoDataUrl, 'PNG', MARGIN, logoY, logoSize, logoSize);
+    } catch {
+      // Fallback si addImage falla
+      setFill(pdf, C.blue);
+      pdf.roundedRect(MARGIN, logoY, logoSize, logoSize, 8, 8, 'F');
+    }
+  } else {
+    // Fallback: cuadrado azul con rayo textual
+    setFill(pdf, C.blue);
+    pdf.roundedRect(MARGIN, logoY, logoSize, logoSize, 8, 8, 'F');
+    setText(pdf, [255, 255, 255]);
+    pdf.setFontSize(16);
+    pdf.setFont('helvetica', 'bold');
+    pdf.text('M', MARGIN + 10, logoY + 21);
+  }
+
+  // Wordmark "My Training"
+  pdf.setFontSize(17);
+  pdf.setFont('helvetica', 'bold');
   setText(pdf, C.text);
-  pdf.text('My ', MARGIN + 36, 58);
+  pdf.text('My ', MARGIN + logoSize + 10, logoY + 21);
   setText(pdf, C.accent);
-  pdf.text('Training', MARGIN + 57, 58);
+  pdf.text('Training', MARGIN + logoSize + 10 + pdf.getTextWidth('My '), logoY + 21);
 
   // Título principal
   pdf.setFontSize(22);
@@ -88,16 +175,12 @@ function drawHeader(pdf: jsPDF, title: string, subtitle?: string): number {
     y += 16;
   }
 
-  // Fecha
+  // Fecha de generación
   pdf.setFontSize(9);
   setText(pdf, C.textDim);
-  pdf.text(
-    `Generado el ${new Date().toLocaleString('es-ES')}`,
-    MARGIN,
-    y + 2
-  );
+  pdf.text(`Generado el ${new Date().toLocaleString('es-ES')}`, MARGIN, y + 2);
 
-  // Línea separadora
+  // Separador
   y += 14;
   setStroke(pdf, C.border);
   pdf.setLineWidth(0.5);
@@ -106,13 +189,17 @@ function drawHeader(pdf: jsPDF, title: string, subtitle?: string): number {
   return y + 20;
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
 // Tarjetas KPI (4 en fila)
-// ===========================================================================
+// ---------------------------------------------------------------------------
 function drawKpiRow(
   pdf: jsPDF,
-  kpis: { label: string; value: string; tone?: 'default' | 'accent' | 'amber' | 'green' }[],
-  startY: number
+  kpis: Array<{
+    label: string;
+    value: string;
+    tone?: 'default' | 'accent' | 'amber' | 'green';
+  }>,
+  startY: number,
 ): number {
   const gap = 8;
   const count = Math.min(kpis.length, 4);
@@ -123,12 +210,10 @@ function drawKpiRow(
     const x = MARGIN + i * (cardW + gap);
     setFill(pdf, C.surface);
     pdf.roundedRect(x, startY, cardW, cardH, 10, 10, 'F');
-
     setStroke(pdf, C.border);
     pdf.setLineWidth(0.4);
     pdf.roundedRect(x, startY, cardW, cardH, 10, 10, 'S');
 
-    // Label arriba
     pdf.setFontSize(7);
     pdf.setFont('helvetica', 'normal');
     setText(pdf, C.textDim);
@@ -136,7 +221,6 @@ function drawKpiRow(
       align: 'center',
     });
 
-    // Valor grande
     pdf.setFontSize(18);
     pdf.setFont('helvetica', 'bold');
     const tone =
@@ -154,40 +238,68 @@ function drawKpiRow(
   return startY + cardH + 24;
 }
 
-// ===========================================================================
-// Sección con título
-// ===========================================================================
-function drawSectionTitle(pdf: jsPDF, title: string, y: number): number {
+// ---------------------------------------------------------------------------
+// Sección: título + separador
+// ---------------------------------------------------------------------------
+function drawSectionTitle(
+  pdf: jsPDF,
+  title: string,
+  subtitle: string | undefined,
+  y: number,
+): number {
   pdf.setFontSize(13);
   pdf.setFont('helvetica', 'bold');
   setText(pdf, C.text);
   pdf.text(title, MARGIN, y);
-  return y + 8;
+
+  if (subtitle) {
+    pdf.setFontSize(8.5);
+    pdf.setFont('helvetica', 'normal');
+    setText(pdf, C.textDim);
+    pdf.text(subtitle, MARGIN, y + 12);
+  }
+
+  return y + (subtitle ? 18 : 8);
 }
 
-// ===========================================================================
-// Tabla de ejercicios (analíticas)
-// ===========================================================================
-interface ExerciseRow {
+// ---------------------------------------------------------------------------
+// Tabla resumen por ejercicio
+// ---------------------------------------------------------------------------
+export interface SetDetail {
+  setNumber: number;
+  weightKg: number | null;
+  reps: number | null;
+  rir: number | null;
+  estimated1Rm: number | null;
+  isPr?: boolean;
+}
+
+export interface ExerciseRow {
   name: string;
   sets: number;
   volume: number;
   best: number;
+  setDetails?: SetDetail[];
 }
 
-function drawExercisesTable(
+function drawSummaryTable(
   pdf: jsPDF,
   rows: ExerciseRow[],
-  startY: number
+  startY: number,
 ): number {
-  let y = drawSectionTitle(pdf, 'Volumen por ejercicio', startY);
+  let y = drawSectionTitle(
+    pdf,
+    'Volumen por ejercicio',
+    'Resumen ordenado por tonelaje acumulado',
+    startY,
+  );
   y += 12;
 
-  const colSets = MARGIN + CONTENT_W * 0.66;
-  const colVol = MARGIN + CONTENT_W * 0.86;
-  const col1Rm = A4_W - MARGIN - 8;
+  const colSets = MARGIN + CONTENT_W * 0.62;
+  const colVol = MARGIN + CONTENT_W * 0.84;
+  const col1Rm = A4_W - MARGIN - 10;
 
-  // Encabezado de tabla
+  // Encabezado de la tabla
   setFill(pdf, C.surface);
   pdf.rect(MARGIN, y, CONTENT_W, 22, 'F');
   pdf.setFontSize(7.5);
@@ -196,22 +308,20 @@ function drawExercisesTable(
   pdf.text('EJERCICIO', MARGIN + 10, y + 15);
   pdf.text('SERIES', colSets, y + 15, { align: 'right' });
   pdf.text('VOLUMEN', colVol, y + 15, { align: 'right' });
-  pdf.text('1RM', col1Rm, y + 15, { align: 'right' });
+  pdf.text('1RM MÁX', col1Rm, y + 15, { align: 'right' });
   y += 22;
 
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(9);
 
   rows.forEach((r, i) => {
-    if (y > A4_H - 60) {
-      y = newPage(pdf);
-    }
+    if (y > PAGE_BOTTOM - 20) y = newPage(pdf);
     if (i % 2 === 0) {
       setFill(pdf, C.surfaceAlt);
       pdf.rect(MARGIN, y, CONTENT_W, 20, 'F');
     }
     setText(pdf, C.text);
-    const name = truncate(pdf, r.name, CONTENT_W * 0.6);
+    const name = truncate(pdf, r.name, CONTENT_W * 0.58);
     pdf.text(name, MARGIN + 10, y + 13);
 
     setText(pdf, C.textMuted);
@@ -227,13 +337,144 @@ function drawExercisesTable(
     y += 20;
   });
 
-  return y + 12;
+  return y + 20;
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
+// Sección detallada: cada ejercicio con su desglose serie a serie
+// ---------------------------------------------------------------------------
+function drawSetDetailCard(
+  pdf: jsPDF,
+  ex: ExerciseRow,
+  startY: number,
+): number {
+  const details = ex.setDetails ?? [];
+  if (details.length === 0) return startY;
+
+  let y = startY;
+  const headerH = 40;
+  const rowH = 17;
+  const padding = 10;
+  const cardH = headerH + padding + details.length * rowH + padding;
+
+  // ¿Cabe en la página actual? Si no, salta de página.
+  // (Permitimos split si el card es enorme, pero normalmente no lo será.)
+  const fitsOnCurrentPage = y + cardH <= PAGE_BOTTOM;
+  const fitsOnNewPage = 60 + cardH <= PAGE_BOTTOM;
+
+  if (!fitsOnCurrentPage && fitsOnNewPage) {
+    y = newPage(pdf);
+  }
+
+  // Card contenedor
+  setFill(pdf, C.surfaceCard);
+  pdf.roundedRect(MARGIN, y, CONTENT_W, cardH, 8, 8, 'F');
+  setStroke(pdf, C.borderSoft);
+  pdf.setLineWidth(0.4);
+  pdf.roundedRect(MARGIN, y, CONTENT_W, cardH, 8, 8, 'S');
+
+  // Barra lateral acento
+  setFill(pdf, C.accent);
+  pdf.roundedRect(MARGIN + 4, y + 6, 3, headerH - 12, 1.5, 1.5, 'F');
+
+  // Nombre del ejercicio
+  pdf.setFontSize(11);
+  pdf.setFont('helvetica', 'bold');
+  setText(pdf, C.text);
+  const nameMaxW = CONTENT_W * 0.55;
+  pdf.text(truncate(pdf, ex.name, nameMaxW), MARGIN + 14, y + 18);
+
+  // Resumen a la derecha: series · tonelaje · 1RM máx
+  pdf.setFontSize(8);
+  pdf.setFont('helvetica', 'normal');
+  setText(pdf, C.textDim);
+  pdf.text(
+    `${ex.sets} ${ex.sets === 1 ? 'serie' : 'series'}  ·  ${ex.volume.toFixed(0)} kg  ·  1RM ${ex.best > 0 ? ex.best.toFixed(1) : '—'}`,
+    A4_W - MARGIN - 12,
+    y + 18,
+    { align: 'right' },
+  );
+
+  // Línea separadora bajo la cabecera
+  setStroke(pdf, C.borderSoft);
+  pdf.setLineWidth(0.3);
+  pdf.line(MARGIN + 10, y + headerH - 4, A4_W - MARGIN - 10, y + headerH - 4);
+
+  // Filas de series
+  let rowY = y + headerH + padding - 2;
+  pdf.setFontSize(8.5);
+  details.forEach((s) => {
+    // Número de serie
+    pdf.setFont('helvetica', 'bold');
+    setText(pdf, C.accent);
+    pdf.text(`S${s.setNumber}`, MARGIN + 16, rowY + 11);
+
+    // Peso × reps
+    pdf.setFont('helvetica', 'normal');
+    setText(pdf, C.text);
+    const weight = s.weightKg != null ? `${s.weightKg} kg` : '—';
+    const reps = s.reps != null ? `${s.reps} reps` : '—';
+    pdf.text(`${weight} × ${reps}`, MARGIN + 40, rowY + 11);
+
+    // RIR
+    setText(pdf, C.textMuted);
+    const rir = s.rir != null ? `RIR ${s.rir}` : 'RIR —';
+    pdf.text(rir, MARGIN + CONTENT_W * 0.55, rowY + 11);
+
+    // 1RM estimado
+    setText(pdf, C.textMuted);
+    const oneRm = s.estimated1Rm != null ? s.estimated1Rm.toFixed(1) : '—';
+    pdf.text(`1RM est. ${oneRm}`, A4_W - MARGIN - 16, rowY + 11, {
+      align: 'right',
+    });
+
+    // Badge PR a la izquierda si aplica
+    if (s.isPr) {
+      setFill(pdf, C.amberDim);
+      pdf.roundedRect(MARGIN + 6, rowY + 3, 20, 10, 3, 3, 'F');
+      setText(pdf, C.amber);
+      pdf.setFontSize(6.5);
+      pdf.setFont('helvetica', 'bold');
+      pdf.text('PR', MARGIN + 16, rowY + 10, { align: 'center' });
+      pdf.setFontSize(8.5);
+    }
+
+    rowY += rowH;
+  });
+
+  return y + cardH + 14;
+}
+
+function drawSetDetailsSection(
+  pdf: jsPDF,
+  rows: ExerciseRow[],
+  startY: number,
+): number {
+  const withDetails = rows.filter((r) => (r.setDetails?.length ?? 0) > 0);
+  if (withDetails.length === 0) return startY;
+
+  let y = startY;
+  if (y > PAGE_BOTTOM - 120) y = newPage(pdf);
+
+  y = drawSectionTitle(
+    pdf,
+    'Detalle por serie',
+    'Peso, repeticiones y 1RM estimado de cada serie registrada',
+    y,
+  );
+  y += 14;
+
+  withDetails.forEach((ex) => {
+    y = drawSetDetailCard(pdf, ex, y);
+  });
+
+  return y + 6;
+}
+
+// ---------------------------------------------------------------------------
 // Tabla de PRs
-// ===========================================================================
-interface PrRow {
+// ---------------------------------------------------------------------------
+export interface PrRow {
   exercise: string;
   weight: number;
   reps: number;
@@ -242,17 +483,17 @@ interface PrRow {
 
 function drawPrsTable(pdf: jsPDF, prs: PrRow[], startY: number): number {
   let y = startY;
-  if (y > A4_H - 150) y = newPage(pdf);
-  y = drawSectionTitle(pdf, 'Récords personales', y);
+  if (y > PAGE_BOTTOM - 150) y = newPage(pdf);
+  y = drawSectionTitle(pdf, 'Récords personales', undefined, y);
   y += 12;
 
   pdf.setFont('helvetica', 'normal');
   pdf.setFontSize(9);
 
   prs.forEach((p) => {
-    if (y > A4_H - 40) y = newPage(pdf);
+    if (y > PAGE_BOTTOM - 26) y = newPage(pdf);
 
-    setFill(pdf, [42, 28, 10]);
+    setFill(pdf, C.amberDim);
     pdf.roundedRect(MARGIN, y, CONTENT_W, 22, 6, 6, 'F');
     setStroke(pdf, C.amber);
     pdf.setLineWidth(0.4);
@@ -264,7 +505,7 @@ function drawPrsTable(pdf: jsPDF, prs: PrRow[], startY: number): number {
 
     setText(pdf, C.text);
     pdf.setFontSize(9);
-    pdf.text(truncate(pdf, p.exercise, CONTENT_W * 0.55), MARGIN + 26, y + 15);
+    pdf.text(truncate(pdf, p.exercise, CONTENT_W * 0.5), MARGIN + 26, y + 15);
 
     setText(pdf, C.amber);
     const txt = `${p.weight} kg × ${p.reps}${
@@ -278,21 +519,18 @@ function drawPrsTable(pdf: jsPDF, prs: PrRow[], startY: number): number {
   return y + 6;
 }
 
-// ===========================================================================
+// ---------------------------------------------------------------------------
 // Footer con paginación
-// ===========================================================================
+// ---------------------------------------------------------------------------
 function drawFooters(pdf: jsPDF) {
   const total = pdf.getNumberOfPages();
   for (let i = 1; i <= total; i++) {
     pdf.setPage(i);
     pdf.setFontSize(7.5);
     setText(pdf, C.textDim);
-    pdf.text(
-      `MyTraining · Página ${i} de ${total}`,
-      A4_W / 2,
-      A4_H - 18,
-      { align: 'center' }
-    );
+    pdf.text(`MyTraining · Página ${i} de ${total}`, A4_W / 2, A4_H - 18, {
+      align: 'center',
+    });
   }
 }
 
@@ -309,13 +547,20 @@ export interface AnalyticsPDFData {
   prs: PrRow[];
   includeVolume: boolean;
   includePrs: boolean;
+  /** Logo en base64 (opcional). Si no se pasa, se intenta cargar /icon.svg. */
+  logoDataUrl?: string | null;
 }
 
-export function buildAnalyticsPDF(data: AnalyticsPDFData): jsPDF {
+export async function buildAnalyticsPDF(
+  data: AnalyticsPDFData,
+): Promise<jsPDF> {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
   paintBackground(pdf);
 
-  let y = drawHeader(pdf, 'Análisis de rendimiento', data.scopeLabel);
+  const logo =
+    data.logoDataUrl !== undefined ? data.logoDataUrl : await loadLogoDataUrl();
+
+  let y = drawHeader(pdf, logo, 'Análisis de rendimiento', data.scopeLabel);
 
   y = drawKpiRow(
     pdf,
@@ -327,18 +572,14 @@ export function buildAnalyticsPDF(data: AnalyticsPDFData): jsPDF {
         value: `${data.totalVolume.toLocaleString('es-ES')} kg`,
         tone: 'accent',
       },
-      {
-        label: 'PRs',
-        value: String(data.totalPRs),
-        tone: 'amber',
-      },
+      { label: 'PRs', value: String(data.totalPRs), tone: 'amber' },
     ],
-    y
+    y,
   );
 
   if (data.includeVolume && data.exercises.length > 0) {
-    y = drawExercisesTable(pdf, data.exercises, y);
-    y += 8;
+    y = drawSummaryTable(pdf, data.exercises, y);
+    y = drawSetDetailsSection(pdf, data.exercises, y);
   }
 
   if (data.includePrs && data.prs.length > 0) {
@@ -374,24 +615,31 @@ export interface PlanPDFData {
   totalExercises: number;
   restCount: number;
   days: PlanDayPDF[];
+  logoDataUrl?: string | null;
 }
 
-export function buildPlanPDF(data: PlanPDFData): jsPDF {
+export async function buildPlanPDF(data: PlanPDFData): Promise<jsPDF> {
   const pdf = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
   paintBackground(pdf);
 
+  const logo =
+    data.logoDataUrl !== undefined ? data.logoDataUrl : await loadLogoDataUrl();
+
   let y = drawHeader(
     pdf,
+    logo,
     data.planName,
     `${data.totalDays} ${
       data.totalDays === 1 ? 'día' : 'días'
     } · ${data.totalExercises} ejercicios${
-      data.restCount > 0 ? ` · ${data.restCount} descanso${data.restCount > 1 ? 's' : ''}` : ''
-    }`
+      data.restCount > 0
+        ? ` · ${data.restCount} descanso${data.restCount > 1 ? 's' : ''}`
+        : ''
+    }`,
   );
 
   data.days.forEach((day) => {
-    if (y > A4_H - 160) y = newPage(pdf);
+    if (y > PAGE_BOTTOM - 160) y = newPage(pdf);
 
     // Barra del día
     setFill(pdf, C.surface);
@@ -400,72 +648,63 @@ export function buildPlanPDF(data: PlanPDFData): jsPDF {
     pdf.setLineWidth(0.4);
     pdf.roundedRect(MARGIN, y, CONTENT_W, 32, 8, 8, 'S');
 
-    // Franja lateral de color
     setFill(pdf, day.isRest ? C.textMuted : C.accent);
     pdf.roundedRect(MARGIN + 4, y + 6, 3, 20, 2, 2, 'F');
 
-    // Día
     pdf.setFontSize(9);
     pdf.setFont('helvetica', 'bold');
     setText(pdf, day.isRest ? C.textMuted : C.accent);
     pdf.text(day.dayName.toUpperCase(), MARGIN + 14, y + 21);
 
-    // Label
     pdf.setFontSize(11);
     setText(pdf, C.text);
     pdf.text(day.label, MARGIN + 80, y + 21);
 
-    // Indicador derecha
     pdf.setFontSize(8.5);
     pdf.setFont('helvetica', 'normal');
-    if (day.isRest) {
-      setText(pdf, C.textDim);
-      pdf.text('Descanso', A4_W - MARGIN - 12, y + 21, { align: 'right' });
-    } else {
-      setText(pdf, C.textDim);
-      pdf.text(
-        `${day.exercises.length} ej.`,
-        A4_W - MARGIN - 12,
-        y + 21,
-        { align: 'right' }
-      );
-    }
+    setText(pdf, C.textDim);
+    pdf.text(
+      day.isRest ? 'Descanso' : `${day.exercises.length} ej.`,
+      A4_W - MARGIN - 12,
+      y + 21,
+      { align: 'right' },
+    );
 
     y += 40;
 
-    // Ejercicios
     if (!day.isRest && day.exercises.length > 0) {
       day.exercises.forEach((ex, idx) => {
-        if (y > A4_H - 60) y = newPage(pdf);
+        if (y > PAGE_BOTTOM - 60) y = newPage(pdf);
 
         setFill(pdf, C.surfaceAlt);
         pdf.roundedRect(MARGIN, y, CONTENT_W, 40, 6, 6, 'F');
 
-        // Índice
         pdf.setFontSize(10);
         pdf.setFont('helvetica', 'bold');
         setText(pdf, C.accent);
         pdf.text(`${idx + 1}`, MARGIN + 12, y + 25);
 
-        // Nombre del ejercicio
         pdf.setFontSize(10.5);
         setText(pdf, C.text);
-        const name = truncate(pdf, ex.name, CONTENT_W * 0.6);
-        pdf.text(name, MARGIN + 28, y + 18);
+        pdf.text(
+          truncate(pdf, ex.name, CONTENT_W * 0.6),
+          MARGIN + 28,
+          y + 18,
+        );
 
-        // Músculos
         if (ex.primaryMuscle) {
           pdf.setFontSize(7.5);
           pdf.setFont('helvetica', 'normal');
           setText(pdf, C.textDim);
-          const muscles = [
-            ex.primaryMuscle,
-            ...(ex.secondaryMuscles ?? []),
-          ].join(' · ');
-          pdf.text(truncate(pdf, muscles, CONTENT_W * 0.6), MARGIN + 28, y + 30);
+          const muscles = [ex.primaryMuscle, ...(ex.secondaryMuscles ?? [])]
+            .join(' · ');
+          pdf.text(
+            truncate(pdf, muscles, CONTENT_W * 0.6),
+            MARGIN + 28,
+            y + 30,
+          );
         }
 
-        // Especificaciones a la derecha
         pdf.setFontSize(9);
         pdf.setFont('helvetica', 'bold');
         setText(pdf, C.accent);
@@ -473,7 +712,7 @@ export function buildPlanPDF(data: PlanPDFData): jsPDF {
           `${ex.sets}×${ex.repsMin}-${ex.repsMax}`,
           A4_W - MARGIN - 12,
           y + 18,
-          { align: 'right' }
+          { align: 'right' },
         );
 
         pdf.setFont('helvetica', 'normal');
@@ -483,7 +722,7 @@ export function buildPlanPDF(data: PlanPDFData): jsPDF {
           `RIR ${ex.rir} · ${ex.restSeconds}s`,
           A4_W - MARGIN - 12,
           y + 30,
-          { align: 'right' }
+          { align: 'right' },
         );
 
         y += 46;

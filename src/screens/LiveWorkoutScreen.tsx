@@ -11,6 +11,8 @@ import {
   Trophy,
   Maximize,
   Ban,
+  CloudOff,
+  Loader2,
 } from 'lucide-react';
 import { useWorkouts } from '../hooks/useWorkouts';
 import { useRoutines } from '../hooks/useRoutines';
@@ -22,6 +24,7 @@ import { MuscleBadges } from '../components/MuscleBadges';
 import { PostWorkoutSummary } from '../components/PostWorkoutSummary';
 import { ImmersiveWorkoutScreen } from './ImmersiveWorkoutScreen';
 import { CardioProtocolPanel } from '../components/CardioProtocolPanel';
+import { TargetSetsModal } from '../components/TargetSetsModal';
 import { estimateOneRm } from '../lib/calculations';
 import { supabase } from '../lib/supabase';
 import { CARDIO_PROTOCOLS } from '../lib/cardioTechniques';
@@ -38,6 +41,8 @@ type Props = {
   onClose: () => void;
 };
 
+const DEFAULT_TARGET_SETS = 3;
+
 export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
   const {
     activeWorkout,
@@ -47,6 +52,7 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
     removeSet,
     finishWorkout,
     cancelWorkout,
+    pendingSyncCount,
   } = useWorkouts(userId);
   const { routines } = useRoutines(userId);
   const { exercises } = useExercises();
@@ -65,6 +71,17 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
     new Map()
   );
   const [showSummary, setShowSummary] = useState<string | null>(null);
+
+  // Ejercicios añadidos en caliente (van al final)
+  const [addedExerciseIds, setAddedExerciseIds] = useState<string[]>([]);
+  // Targets personalizados del usuario (sobrescriben rutina/default)
+  const [customTargets, setCustomTargets] = useState<Record<string, number>>({});
+  // Ejercicio pendiente de configurar series (modal TargetSetsModal)
+  const [pendingExercise, setPendingExercise] = useState<Exercise | null>(null);
+  // Flag: venimos del inmersivo a añadir un ejercicio
+  const [returnToImmersive, setReturnToImmersive] = useState(false);
+  // Ejercicio al que saltar al reabrir el inmersivo
+  const [newExerciseId, setNewExerciseId] = useState<string | null>(null);
 
   const routine = useMemo(
     () => routines.find((r) => r.id === routineId) ?? null,
@@ -109,14 +126,53 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
     }
   }, [started, activeWorkout, routineId, startWorkout]);
 
+  // ---------------------------------------------------------------------------
+  // Ejercicios del entreno, en orden:
+  //   1. Primero los de la rutina (orden original)
+  //   2. Después los añadidos en caliente (orden de adición)
+  //   3. Por último cualquier huérfano con series (fallback)
+  // ---------------------------------------------------------------------------
   const workoutExercises = useMemo(() => {
-    const ids = new Set(sets.map((s) => s.exerciseId));
-    if (routine) routine.exercises.forEach((re) => ids.add(re.exerciseId));
-    return exercises.filter((e) => ids.has(e.id));
-  }, [sets, routine, exercises]);
+    const ordered: Exercise[] = [];
+    const seen = new Set<string>();
+    const byId = new Map(exercises.map((e) => [e.id, e]));
 
-    // Series objetivo por ejercicio (de la rutina). Si es entrenamiento libre,
-  // el mapa está vacío y el modo inmersivo usará 3 por defecto.
+    // 1. Rutina
+    if (routine) {
+      routine.exercises.forEach((re) => {
+        if (seen.has(re.exerciseId)) return;
+        const ex = byId.get(re.exerciseId);
+        if (ex) {
+          ordered.push(ex);
+          seen.add(re.exerciseId);
+        }
+      });
+    }
+
+    // 2. Añadidos en caliente (van al final)
+    addedExerciseIds.forEach((id) => {
+      if (seen.has(id)) return;
+      const ex = byId.get(id);
+      if (ex) {
+        ordered.push(ex);
+        seen.add(id);
+      }
+    });
+
+    // 3. Fallback
+    sets.forEach((s) => {
+      if (seen.has(s.exerciseId)) return;
+      const ex = byId.get(s.exerciseId);
+      if (ex) {
+        ordered.push(ex);
+        seen.add(s.exerciseId);
+      }
+    });
+
+    return ordered;
+  }, [sets, routine, exercises, addedExerciseIds]);
+
+  // Mapa de targets: rutina (base) + custom (override)
   const targetSetsByExercise = useMemo(() => {
     const map = new Map<string, number>();
     if (routine) {
@@ -124,29 +180,48 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
         map.set(re.exerciseId, re.targetSets);
       });
     }
+    Object.entries(customTargets).forEach(([id, n]) => map.set(id, n));
     return map;
-  }, [routine]);
+  }, [routine, customTargets]);
 
+  function updateTarget(exerciseId: string, n: number) {
+    const safe = Math.max(1, Math.min(20, n));
+    setCustomTargets((prev) => ({ ...prev, [exerciseId]: safe }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Picker (catálogo)
+  // ---------------------------------------------------------------------------
   if (pickerOpen) {
     return (
       <CatalogScreen
         userId={userId}
-        onBack={() => setPickerOpen(false)}
+        onBack={() => {
+          setPickerOpen(false);
+          if (returnToImmersive) {
+            setReturnToImmersive(false);
+            setImmersive(true);
+          }
+        }}
         onPick={(ex) => {
-          setCurrent({ exercise: ex, setNumber: 1 });
+          // NO abrimos SetLogger. Abrimos el modal de series objetivo.
+          setPendingExercise(ex);
           setPickerOpen(false);
         }}
       />
     );
   }
 
-  if (!activeWorkout) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <p className="text-sm text-zinc-500">Preparando entrenamiento…</p>
-      </div>
-    );
-  }
+// Mostrar la pantalla aunque activeWorkout sea null si estamos mostrando el
+// resumen final (acabamos de terminar el entreno y PostWorkoutSummary debe
+// renderizarse por encima de este bloque).
+if (!activeWorkout && !showSummary) {
+  return (
+    <div className="flex h-64 items-center justify-center">
+      <p className="text-sm text-zinc-500">Preparando entrenamiento…</p>
+    </div>
+  );
+}
 
   const isCardio = (e: Exercise) => e.category === 'Cardio';
 
@@ -187,6 +262,7 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
         </button>
         <button
           onClick={async () => {
+            if (!activeWorkout) return;
             const id = activeWorkout.id;
             await finishWorkout();
             setShowSummary(id);
@@ -196,6 +272,17 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
           Finalizar
         </button>
       </div>
+
+      {pendingSyncCount > 0 && (
+        <div className="flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/5 px-3 py-2">
+          <CloudOff size={14} className="shrink-0 text-amber-400" />
+          <p className="text-[11px] leading-relaxed text-amber-200">
+            {pendingSyncCount}{' '}
+            {pendingSyncCount === 1 ? 'serie pendiente' : 'series pendientes'}{' '}
+            de sincronizar. Se subirán automáticamente al recuperar conexión.
+          </p>
+        </div>
+      )}
 
       {workoutExercises.length === 0 && (
         <div className="rounded-2xl border border-dashed border-zinc-800 py-10 text-center">
@@ -208,17 +295,26 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
       {workoutExercises.map((ex) => {
         const exSets = sets.filter((s) => s.exerciseId === ex.id);
         const lastSet = exSets[exSets.length - 1] ?? null;
+        const target = targetSetsByExercise.get(ex.id) ?? DEFAULT_TARGET_SETS;
+
         return (
           <div
             key={ex.id}
             className="rounded-2xl border border-zinc-800/70 bg-zinc-900/60 p-4"
           >
             <div className="mb-3">
-              <h3
-                className={`font-semibold ${gymMode ? 'text-lg' : 'text-sm'}`}
-              >
-                {ex.name}
-              </h3>
+              <div className="flex items-baseline justify-between gap-2">
+                <h3
+                  className={`min-w-0 flex-1 truncate font-semibold ${
+                    gymMode ? 'text-lg' : 'text-sm'
+                  }`}
+                >
+                  {ex.name}
+                </h3>
+                <span className="shrink-0 rounded-full border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[10px] tabular-nums text-zinc-400">
+                  {exSets.length}/{target}
+                </span>
+              </div>
               <div className="mt-2">
                 <MuscleBadges
                   primary={ex.primaryMuscle}
@@ -236,6 +332,7 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
                   }`}
                 >
                   <span className="w-6 text-zinc-500">#{s.setNumber}</span>
+
                   {isCardio(ex) ? (
                     <span
                       className={`flex-1 text-zinc-300 ${
@@ -262,15 +359,33 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
                       )}
                     </span>
                   )}
+
+                  {s.syncStatus === 'pending' && (
+                    <Loader2
+                      size={12}
+                      className="shrink-0 animate-spin text-zinc-600"
+                      aria-label="Guardando"
+                    />
+                  )}
+                  {s.syncStatus === 'queued' && (
+                    <CloudOff
+                      size={12}
+                      className="shrink-0 text-amber-400"
+                      aria-label="Pendiente de sincronizar"
+                    />
+                  )}
+
                   {s.notes && (
                     <MessageSquare
                       size={12}
                       className="shrink-0 text-cyan-400"
                     />
                   )}
+
                   <button
                     onClick={() => removeSet(s.localId)}
                     className="text-zinc-600 hover:text-red-400"
+                    aria-label="Borrar serie"
                   >
                     <Trash2 size={12} />
                   </button>
@@ -342,21 +457,65 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
         />
       )}
 
-            {immersive && (
-        <ImmersiveWorkoutScreen
-          exercises={workoutExercises}
-          sets={sets}
-          targetSetsByExercise={targetSetsByExercise}
-          onLogSet={logSet}
-          onFinish={async () => {
-            setImmersive(false);
-            const id = activeWorkout.id;
-            await finishWorkout();
-            setShowSummary(id);
+      {/* Modal de series objetivo (tras elegir ejercicio del catálogo) */}
+      {pendingExercise && (
+        <TargetSetsModal
+          exercise={pendingExercise}
+          initialSets={
+            targetSetsByExercise.get(pendingExercise.id) ?? DEFAULT_TARGET_SETS
+          }
+          onCancel={() => {
+            setPendingExercise(null);
+            if (returnToImmersive) {
+              setReturnToImmersive(false);
+              setImmersive(true);
+            }
           }}
-          onClose={() => setImmersive(false)}
+          onConfirm={(n) => {
+            const ex = pendingExercise;
+            setPendingExercise(null);
+
+            // Añadir al final de la lista
+            setAddedExerciseIds((prev) =>
+              prev.includes(ex.id) ? prev : [...prev, ex.id]
+            );
+            // Guardar target
+            updateTarget(ex.id, n);
+
+            if (returnToImmersive) {
+              setReturnToImmersive(false);
+              setNewExerciseId(ex.id);
+              setImmersive(true);
+            }
+          }}
         />
       )}
+
+      {/* Modo inmersivo */}
+   {immersive && (
+  <ImmersiveWorkoutScreen
+    exercises={workoutExercises}
+    sets={sets}
+    targets={targetSetsByExercise}
+    onChangeTarget={updateTarget}
+    onLogSet={logSet}
+    onFinish={async () => {
+      if (!activeWorkout) return;
+      setImmersive(false);
+      const id = activeWorkout.id;
+      await finishWorkout();
+      setShowSummary(id);
+    }}
+    onClose={() => setImmersive(false)}
+    onAddExercise={() => {
+      setReturnToImmersive(true);
+      setImmersive(false);
+      setPickerOpen(true);
+    }}
+    initialExerciseId={newExerciseId ?? undefined}
+    onConsumeInitialExercise={() => setNewExerciseId(null)}
+  />
+)}
 
       {showSummary && (
         <PostWorkoutSummary

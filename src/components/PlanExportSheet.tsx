@@ -1,8 +1,16 @@
 import { useState } from 'react';
-import { X, FileText, FileType, Loader2, Check, Copy } from 'lucide-react';
+import {
+  X,
+  FileText,
+  FileType,
+  FileSpreadsheet,
+  Loader2,
+  Check,
+  Copy,
+} from 'lucide-react';
 import { DAY_LABELS } from '../lib/constants';
 import { copyToClipboard, downloadText } from '../lib/fileActions';
-import { buildPlanPDF } from '../lib/pdfBuilder';
+import { buildPlanCsv, downloadCsv } from '../lib/csv';
 import { useToast } from '../lib/ui/ToastProvider';
 import type { RoutineWithExercises } from '../hooks/useRoutines';
 
@@ -32,22 +40,30 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
     return A - B;
   });
 
-  const totalExercises = orderedRoutines.reduce((a, r) => a + r.exercises.length, 0);
+  const totalExercises = orderedRoutines.reduce(
+    (a, r) => a + r.exercises.length,
+    0
+  );
   const restCount = orderedRoutines.filter((r) => r.isRest).length;
 
   function buildText(): string {
     const lines: string[] = [];
     lines.push(`📋 PLAN: ${planName}`);
     lines.push(
-      `📅 ${orderedRoutines.length} ${orderedRoutines.length === 1 ? 'día' : 'días'} · ${totalExercises} ejercicios${
-        restCount > 0 ? ` · ${restCount} descanso${restCount > 1 ? 's' : ''}` : ''
+      `📅 ${orderedRoutines.length} ${
+        orderedRoutines.length === 1 ? 'día' : 'días'
+      } · ${totalExercises} ejercicios${
+        restCount > 0
+          ? ` · ${restCount} descanso${restCount > 1 ? 's' : ''}`
+          : ''
       }`
     );
     lines.push('');
     lines.push('═══════════════════════════════');
 
     orderedRoutines.forEach((r) => {
-      const dayName = r.dayOfWeek !== null ? DAY_LABELS[r.dayOfWeek] : 'Sin día';
+      const dayName =
+        r.dayOfWeek !== null ? DAY_LABELS[r.dayOfWeek] : 'Sin día';
       const label = r.isRest
         ? r.dayLabel && r.dayLabel !== planName
           ? r.dayLabel
@@ -75,7 +91,9 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
             lines.push(`   Primario: ${re.exercise.primaryMuscle}`);
           }
           if (re.exercise?.secondaryMuscles?.length) {
-            lines.push(`   Secundarios: ${re.exercise.secondaryMuscles.join(', ')}`);
+            lines.push(
+              `   Secundarios: ${re.exercise.secondaryMuscles.join(', ')}`
+            );
           }
         });
       }
@@ -101,7 +119,10 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
       setTimeout(() => setDone(null), 2000);
     } catch (e) {
       console.error(`[PlanExportSheet] ${key} failed:`, e);
-      toast.error('Error al exportar', 'Revisa tu conexión e inténtalo de nuevo.');
+      toast.error(
+        'Error al exportar',
+        'Revisa tu conexión e inténtalo de nuevo.'
+      );
     } finally {
       setBusy(null);
     }
@@ -153,6 +174,23 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
             }
           />
           <ActionButton
+            icon={FileSpreadsheet}
+            label="Descargar .csv"
+            description="Compatible con Excel y Google Sheets (una fila por ejercicio)"
+            busy={busy === 'csv'}
+            done={done === 'csv'}
+            onClick={() =>
+              withBusy(
+                'csv',
+                () => {
+                  const csv = buildPlanCsv(orderedRoutines, planName);
+                  downloadCsv(csv, `${filename}.csv`);
+                },
+                'CSV descargado'
+              )
+            }
+          />
+          <ActionButton
             icon={FileType}
             label="Descargar .pdf"
             description="Reporte formateado por día con ejercicios y series"
@@ -161,15 +199,23 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
             onClick={() =>
               withBusy(
                 'pdf',
-                () => {
-                  const pdf = buildPlanPDF({
+                async () => {
+                  const { buildPlanPDF, loadLogoDataUrl } = await import(
+                    '../lib/pdfBuilder'
+                  );
+
+                  const logoDataUrl = await loadLogoDataUrl();
+
+                  const pdf = await buildPlanPDF({
                     planName,
                     totalDays: orderedRoutines.length,
                     totalExercises,
                     restCount,
                     days: orderedRoutines.map((r) => ({
                       dayName:
-                        r.dayOfWeek !== null ? DAY_LABELS[r.dayOfWeek] : 'Sin día',
+                        r.dayOfWeek !== null
+                          ? DAY_LABELS[r.dayOfWeek]
+                          : 'Sin día',
                       label: r.isRest
                         ? r.dayLabel && r.dayLabel !== planName
                           ? r.dayLabel
@@ -189,6 +235,7 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
                         secondaryMuscles: re.exercise?.secondaryMuscles,
                       })),
                     })),
+                    logoDataUrl,
                   });
                   pdf.save(`${filename}.pdf`);
                 },
@@ -237,7 +284,11 @@ function ActionButton({
         )}
       </span>
       <div className="min-w-0 flex-1">
-        <p className={`text-sm font-semibold ${done ? 'text-cyan-200' : 'text-zinc-100'}`}>
+        <p
+          className={`text-sm font-semibold ${
+            done ? 'text-cyan-200' : 'text-zinc-100'
+          }`}
+        >
           {done ? '¡Listo!' : label}
         </p>
         {description && !done && (

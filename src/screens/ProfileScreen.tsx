@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   LogOut,
   Settings,
@@ -6,6 +6,7 @@ import {
   Trophy,
   TrendingUp,
   Download,
+  Upload,
   Trash2,
   Info,
   MessageCircle,
@@ -21,7 +22,14 @@ import {
 import { supabase } from '../lib/supabase';
 import { tdee } from '../lib/calculations';
 import { useStreak } from '../hooks/useStreak';
-import { exportBackup, deleteAllMyData } from '../lib/backup';
+import {
+  exportBackup,
+  deleteAllMyData,
+  previewBackup,
+  importBackup,
+  type ImportPreview,
+} from '../lib/backup';
+import { useToast } from '../lib/ui/ToastProvider';
 import type { Profile } from '../types';
 
 const APP_VERSION = '3.0.0';
@@ -36,6 +44,7 @@ export function ProfileScreen({
   onOpenPreferences: () => void;
   onSaveProfile: (patch: Partial<Profile>) => Promise<void>;
 }) {
+  const toast = useToast();
   const { current: streakCurrent, best: streakBest, totalDays } = useStreak(
     profile.id
   );
@@ -53,6 +62,16 @@ export function ProfileScreen({
   const [exporting, setExporting] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // ----- Importación de backup -----
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importPreview, setImportPreview] = useState<{
+    file: File;
+    preview: ImportPreview;
+  } | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<string>('');
+  const [importError, setImportError] = useState<string | null>(null);
 
   // Cargar estadísticas
   useEffect(() => {
@@ -124,7 +143,6 @@ export function ProfileScreen({
   );
 
   const memberSince = useMemo(() => {
-    // No tenemos created_at en Profile, así que usamos un texto neutro
     return 'Miembro de MyTraining';
   }, []);
 
@@ -138,12 +156,12 @@ export function ProfileScreen({
         weight_kg: v,
       });
       if (error) throw error;
-      // Actualizamos también el peso del perfil
       await onSaveProfile({ weightKg: v });
       setBwInput('');
+      toast.success('Peso registrado', `${v} kg guardados correctamente.`);
     } catch (e) {
       console.error(e);
-      alert('No se pudo registrar el peso.');
+      toast.error('No se pudo registrar el peso', 'Inténtalo de nuevo.');
     } finally {
       setSavingBw(false);
     }
@@ -153,12 +171,68 @@ export function ProfileScreen({
     setExporting(true);
     try {
       await exportBackup(profile.id);
+      toast.success('Backup exportado', 'Revisa tus descargas.');
     } catch (e) {
       console.error(e);
-      alert('Error al exportar el backup.');
+      toast.error('Error al exportar el backup', 'Inténtalo de nuevo.');
     } finally {
       setExporting(false);
     }
+  }
+
+  // ---------------- Importación de backup ----------------
+  function handleImportClick() {
+    setImportError(null);
+    fileInputRef.current?.click();
+  }
+
+  async function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset del input para permitir volver a seleccionar el mismo archivo
+    e.target.value = '';
+    if (!file) return;
+
+    try {
+      const preview = await previewBackup(file);
+      setImportPreview({ file, preview });
+      setImportError(null);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Archivo no válido.';
+      toast.error('No se pudo leer el backup', msg);
+    }
+  }
+
+  async function handleConfirmImport() {
+    if (!importPreview) return;
+    setImporting(true);
+    setImportError(null);
+    setImportProgress('Preparando importación…');
+    try {
+      const result = await importBackup(
+        importPreview.file,
+        profile.id,
+        (msg) => setImportProgress(msg)
+      );
+      toast.success(
+        'Backup importado',
+        `${result.routines} rutinas · ${result.workouts} entrenos · ${result.workoutSets} series`
+      );
+      // Recarga total: los hooks vuelven a leer de Supabase
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : 'Error desconocido.';
+      setImportError(msg);
+      setImporting(false);
+    }
+  }
+
+  function handleCancelImport() {
+    if (importing) return;
+    setImportPreview(null);
+    setImportError(null);
+    setImportProgress('');
   }
 
   async function handleDeleteAll() {
@@ -167,7 +241,10 @@ export function ProfileScreen({
       await deleteAllMyData();
     } catch (e) {
       console.error(e);
-      alert('No se pudo borrar la cuenta. Contacta con soporte.');
+      toast.error(
+        'No se pudo borrar la cuenta',
+        'Contacta con soporte si el problema persiste.'
+      );
       setDeleting(false);
     }
   }
@@ -363,6 +440,13 @@ export function ProfileScreen({
           onClick={handleExport}
         />
         <MenuButton
+          icon={<Upload size={16} className="text-cyan-400" />}
+          label="Importar backup"
+          description="Restaura tus datos desde un archivo JSON"
+          loading={importing}
+          onClick={handleImportClick}
+        />
+        <MenuButton
           icon={<Trash2 size={16} className="text-red-400" />}
           label="Borrar cuenta y todos mis datos"
           description="Acción irreversible (GDPR)"
@@ -405,6 +489,161 @@ export function ProfileScreen({
       >
         <LogOut size={14} /> Cerrar sesión
       </button>
+
+      {/* ---------- INPUT FILE OCULTO (importación) ---------- */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={handleFileSelected}
+      />
+
+      {/* ---------- MODAL IMPORTAR BACKUP ---------- */}
+      {importPreview && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-t-3xl border-t border-cyan-500/30 bg-zinc-950 p-5 pb-8">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-lg font-bold text-cyan-200">
+                Importar backup
+              </h2>
+              <button
+                onClick={handleCancelImport}
+                disabled={importing}
+                className="text-zinc-500 disabled:opacity-40"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Nombre + fecha del archivo */}
+            <div className="mb-3 rounded-2xl border border-zinc-800/60 bg-zinc-900/60 p-3">
+              <p className="truncate text-xs font-medium text-zinc-200">
+                {importPreview.file.name}
+              </p>
+              <p className="mt-0.5 text-[10px] text-zinc-500">
+                Exportado el{' '}
+                {new Date(importPreview.preview.exportedAt).toLocaleString(
+                  'es-ES'
+                )}
+              </p>
+            </div>
+
+            {/* Conteos */}
+            <div className="mb-3 rounded-2xl border border-zinc-800/60 bg-zinc-900/40 p-3">
+              <p className="mb-2 text-[10px] font-semibold uppercase tracking-widest text-zinc-500">
+                Contenido
+              </p>
+              <ul className="space-y-1 text-[11px] text-zinc-300">
+                <li className="flex justify-between">
+                  <span>Rutinas</span>
+                  <span className="tabular-nums text-zinc-100">
+                    {importPreview.preview.counts.routines}
+                  </span>
+                </li>
+                <li className="flex justify-between">
+                  <span>Ejercicios de rutina</span>
+                  <span className="tabular-nums text-zinc-100">
+                    {importPreview.preview.counts.routineExercises}
+                  </span>
+                </li>
+                <li className="flex justify-between">
+                  <span>Entrenamientos</span>
+                  <span className="tabular-nums text-zinc-100">
+                    {importPreview.preview.counts.workouts}
+                  </span>
+                </li>
+                <li className="flex justify-between">
+                  <span>Series registradas</span>
+                  <span className="tabular-nums text-zinc-100">
+                    {importPreview.preview.counts.workoutSets}
+                  </span>
+                </li>
+                <li className="flex justify-between">
+                  <span>Registros de peso</span>
+                  <span className="tabular-nums text-zinc-100">
+                    {importPreview.preview.counts.bodyweightLogs}
+                  </span>
+                </li>
+                <li className="flex justify-between">
+                  <span>Ejercicios personalizados</span>
+                  <span className="tabular-nums text-zinc-100">
+                    {importPreview.preview.counts.customExercises}
+                  </span>
+                </li>
+              </ul>
+            </div>
+
+            {/* Advertencia destructiva */}
+            <div className="mb-4 rounded-2xl border border-amber-500/30 bg-amber-500/5 p-3">
+              <div className="flex items-start gap-2">
+                <AlertTriangle
+                  size={16}
+                  className="mt-0.5 shrink-0 text-amber-400"
+                />
+                <p className="text-[11px] leading-relaxed text-amber-200">
+                  Se borrarán <b>todos tus datos actuales</b> antes de
+                  importar (excepto tu cuenta y tu email). Esta acción no se
+                  puede deshacer.
+                </p>
+              </div>
+            </div>
+
+            {/* Progreso durante la importación */}
+            {importing && (
+              <div className="mb-4 flex items-center gap-2 rounded-2xl border border-cyan-500/30 bg-cyan-500/5 p-3">
+                <Loader2 size={14} className="animate-spin text-cyan-400" />
+                <p className="text-[11px] text-cyan-200">
+                  {importProgress || 'Importando…'}
+                </p>
+              </div>
+            )}
+
+            {/* Error */}
+            {importError && (
+              <div className="mb-4 rounded-2xl border border-red-500/40 bg-red-500/10 p-3">
+                <div className="flex items-start gap-2">
+                  <AlertTriangle
+                    size={16}
+                    className="mt-0.5 shrink-0 text-red-400"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-red-300">
+                      Error al importar
+                    </p>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-red-200/80">
+                      {importError}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Botones */}
+            <div className="flex gap-2">
+              <button
+                onClick={handleCancelImport}
+                disabled={importing}
+                className="flex-1 rounded-2xl border border-zinc-800 bg-zinc-900/60 py-3 text-sm font-semibold text-zinc-300 disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleConfirmImport}
+                disabled={importing}
+                className="flex flex-1 items-center justify-center gap-2 rounded-2xl border border-cyan-500/40 bg-cyan-500/10 py-3 text-sm font-semibold text-cyan-200 disabled:opacity-50"
+              >
+                {importing ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Upload size={14} />
+                )}
+                {importing ? 'Importando…' : 'Sí, importar'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ---------- MODAL BORRAR CUENTA ---------- */}
       {showDeleteConfirm && (

@@ -1,10 +1,34 @@
 import { useState } from 'react';
-import { X, FileText, FileType, Loader2, Check, Copy } from 'lucide-react';
-import { buildDataset, type ExportScope, type ExportContent } from '../lib/exporters';
+import {
+  X,
+  FileText,
+  FileType,
+  FileSpreadsheet,
+  Loader2,
+  Check,
+  Copy,
+} from 'lucide-react';
+import {
+  buildDataset,
+  type ExportScope,
+  type ExportContent,
+} from '../lib/exporters';
 import { copyToClipboard, downloadText } from '../lib/fileActions';
-import { buildAnalyticsPDF } from '../lib/pdfBuilder';
+import { buildAnalyticsCsv, downloadCsv } from '../lib/csv';
 import { useToast } from '../lib/ui/ToastProvider';
 import type { Workout, WorkoutSet, Exercise } from '../types';
+
+// ---------------------------------------------------------------------------
+// Tipos locales (antes venían de pdfBuilder; ahora se importa dinámicamente)
+// ---------------------------------------------------------------------------
+interface SetDetail {
+  setNumber: number;
+  weightKg: number | null;
+  reps: number | null;
+  rir: number | null;
+  estimated1Rm: number | null;
+  isPr?: boolean;
+}
 
 type Props = {
   workouts: Workout[];
@@ -29,6 +53,30 @@ const SCOPE_LABEL: Record<ExportScope['kind'], string> = {
   all: 'Historial completo',
   analytics: 'Análisis completo',
 };
+
+function getScopeStartDate(scope: ExportScope['kind']): Date {
+  const now = new Date();
+  switch (scope) {
+    case 'week': {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 7);
+      return d;
+    }
+    case 'month':
+      return new Date(now.getFullYear(), now.getMonth(), 1);
+    case 'range': {
+      const d = new Date(now);
+      d.setDate(d.getDate() - 90);
+      return d;
+    }
+    case 'year':
+      return new Date(now.getFullYear(), 0, 1);
+    case 'all':
+    case 'analytics':
+    default:
+      return new Date(0);
+  }
+}
 
 export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
   const [scope, setScope] = useState<ExportScope['kind']>('week');
@@ -63,7 +111,9 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
     lines.push('═══ RESUMEN ═══');
     lines.push(`Entrenamientos: ${data.summary.totalWorkouts}`);
     lines.push(`Series totales: ${data.summary.totalSets}`);
-    lines.push(`Volumen total: ${data.summary.totalVolume.toLocaleString('es-ES')} kg`);
+    lines.push(
+      `Volumen total: ${data.summary.totalVolume.toLocaleString('es-ES')} kg`
+    );
     lines.push(`PRs conseguidos: ${data.summary.totalPRs}`);
     lines.push('');
 
@@ -71,7 +121,9 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
       lines.push('═══ EJERCICIOS ═══');
       data.exercises.forEach((e) => {
         lines.push(
-          `• ${e.name}: ${e.sets} series · ${e.volume.toFixed(0)} kg · Mejor 1RM ${e.best.toFixed(1)} kg`
+          `• ${e.name}: ${e.sets} series · ${e.volume.toFixed(
+            0
+          )} kg · Mejor 1RM ${e.best.toFixed(1)} kg`
         );
       });
       lines.push('');
@@ -93,6 +145,39 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
     return lines.join('\n');
   }
 
+  function buildSetDetailsByExercise(): Map<string, SetDetail[]> {
+    const startDate = getScopeStartDate(scope);
+
+    const scopedWorkoutIds = new Set(
+      workouts
+        .filter((w) => new Date(w.startedAt) >= startDate)
+        .map((w) => w.id)
+    );
+
+    const scopedSets = sets.filter((s) => {
+      if (!scopedWorkoutIds.has(s.workoutId)) return false;
+      if (exerciseId && s.exerciseId !== exerciseId) return false;
+      return true;
+    });
+
+    const map = new Map<string, SetDetail[]>();
+    scopedSets.forEach((s) => {
+      const arr = map.get(s.exerciseId) ?? [];
+      arr.push({
+        setNumber: s.setNumber,
+        weightKg: s.weightKg,
+        reps: s.reps,
+        rir: s.rir,
+        estimated1Rm: s.estimated1Rm,
+        isPr: s.isPr,
+      });
+      map.set(s.exerciseId, arr);
+    });
+
+    map.forEach((arr) => arr.sort((a, b) => a.setNumber - b.setNumber));
+    return map;
+  }
+
   async function withBusy(
     key: string,
     fn: () => Promise<void> | void,
@@ -107,7 +192,10 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
       setTimeout(() => setDone(null), 2000);
     } catch (e) {
       console.error(`[ExportSheet] ${key} failed:`, e);
-      toast.error('Error al exportar', 'Revisa tu conexión e inténtalo de nuevo.');
+      toast.error(
+        'Error al exportar',
+        'Revisa tu conexión e inténtalo de nuevo.'
+      );
     } finally {
       setBusy(null);
     }
@@ -120,7 +208,7 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
           <div>
             <h2 className="text-lg font-bold">Exportar análisis</h2>
             <p className="text-[11px] text-zinc-500">
-              Copia, descarga en .txt o guarda como .pdf
+              Copia, descarga en .txt, .csv o guarda como .pdf
             </p>
           </div>
           <button onClick={onClose} className="text-zinc-500">
@@ -217,6 +305,28 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
               }
             />
             <ActionButton
+              icon={FileSpreadsheet}
+              label="Descargar .csv"
+              description="Compatible con Excel y Google Sheets (una fila por serie)"
+              busy={busy === 'csv'}
+              done={done === 'csv'}
+              onClick={() =>
+                withBusy(
+                  'csv',
+                  () => {
+                    const csv = buildAnalyticsCsv(
+                      workouts,
+                      sets,
+                      exercises,
+                      currentScope()
+                    );
+                    downloadCsv(csv, `${filename}.csv`);
+                  },
+                  'CSV descargado'
+                )
+              }
+            />
+            <ActionButton
               icon={FileType}
               label="Descargar .pdf"
               description="Reporte formateado con tablas y gráficos vectoriales"
@@ -225,7 +335,11 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
               onClick={() =>
                 withBusy(
                   'pdf',
-                  () => {
+                  async () => {
+                    // Lazy-load de pdfBuilder (jspdf + html2canvas + dompurify)
+                    const { buildAnalyticsPDF, loadLogoDataUrl } =
+                      await import('../lib/pdfBuilder');
+
                     const data = buildDataset(
                       workouts,
                       sets,
@@ -234,22 +348,36 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
                       content
                     );
 
-                    const pdf = buildAnalyticsPDF({
+                    const setDetailsByExercise = buildSetDetailsByExercise();
+                    const exerciseIdByName = new Map(
+                      exercises.map((e) => [e.name, e.id])
+                    );
+
+                    const logoDataUrl = await loadLogoDataUrl();
+
+                    const pdf = await buildAnalyticsPDF({
                       scopeLabel: `${SCOPE_LABEL[scope]} · ${
                         exerciseId
-                          ? exercises.find((e) => e.id === exerciseId)?.name ?? 'Todos'
+                          ? exercises.find((e) => e.id === exerciseId)?.name ??
+                            'Todos'
                           : 'Todos los ejercicios'
                       }`,
                       totalWorkouts: data.summary.totalWorkouts,
                       totalSets: data.summary.totalSets,
                       totalVolume: data.summary.totalVolume,
                       totalPRs: data.summary.totalPRs,
-                      exercises: data.exercises.map((e) => ({
-                        name: e.name,
-                        sets: e.sets,
-                        volume: e.volume,
-                        best: e.best,
-                      })),
+                      exercises: data.exercises.map((e) => {
+                        const exId = exerciseIdByName.get(e.name);
+                        return {
+                          name: e.name,
+                          sets: e.sets,
+                          volume: e.volume,
+                          best: e.best,
+                          setDetails: exId
+                            ? setDetailsByExercise.get(exId) ?? []
+                            : [],
+                        };
+                      }),
                       prs: data.prs.map((p) => ({
                         exercise: p.exercise,
                         weight: p.weightKg ?? 0,
@@ -258,6 +386,7 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
                       })),
                       includeVolume: content.volume,
                       includePrs: content.prs,
+                      logoDataUrl,
                     });
 
                     pdf.save(`${filename}.pdf`);
@@ -273,7 +402,13 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
     <section className="mb-4">
       <p className="mb-2 text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
@@ -341,7 +476,11 @@ function ActionButton({
         )}
       </span>
       <div className="min-w-0 flex-1">
-        <p className={`text-sm font-semibold ${done ? 'text-cyan-200' : 'text-zinc-100'}`}>
+        <p
+          className={`text-sm font-semibold ${
+            done ? 'text-cyan-200' : 'text-zinc-100'
+          }`}
+        >
           {done ? '¡Listo!' : label}
         </p>
         {description && !done && (

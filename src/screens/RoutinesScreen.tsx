@@ -23,7 +23,10 @@ import { ListSkeleton } from '../components/Skeleton';
 import { EmptyState } from '../components/EmptyState';
 import { WeekComparisonBadge } from '../components/WeekComparisonBadge';
 import { PlanExportSheet } from '../components/PlanExportSheet';
+import { TargetSetsModal } from '../components/TargetSetsModal';
 import { weekdayIndex } from '../lib/date';
+import { supabase } from '../lib/supabase';
+import type { Exercise } from '../types';
 
 type Props = {
   userId: string;
@@ -35,6 +38,8 @@ interface PlanGroup {
   days: RoutineWithExercises[];
 }
 
+const DEFAULT_TARGET_SETS = 3;
+
 export function RoutinesScreen({ userId, onStartWorkout }: Props) {
   const {
     routines,
@@ -43,7 +48,6 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
     update,
     remove,
     removePlan,
-    addExercise,
     removeRoutineExercise,
     reorder,
     installTemplate,
@@ -59,6 +63,20 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [showTemplates, setShowTemplates] = useState(false);
   const [exporting, setExporting] = useState<{ planName: string } | null>(null);
+
+  // Modal de series objetivo al añadir un ejercicio a una rutina
+  const [pendingRoutineExercise, setPendingRoutineExercise] = useState<{
+    routineId: string;
+    exercise: Exercise;
+  } | null>(null);
+
+  // Modal de series objetivo al editar un ejercicio ya añadido
+  const [editingRoutineExercise, setEditingRoutineExercise] = useState<{
+    routineId: string;
+    routineExerciseId: string;
+    exercise: Exercise;
+    currentTargetSets: number;
+  } | null>(null);
 
   const plans = useMemo<PlanGroup[]>(() => {
     const map = new Map<string, RoutineWithExercises[]>();
@@ -79,19 +97,91 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
 
   const todayIdx = weekdayIndex(new Date());
 
+  // ---------------------------------------------------------------------------
+  // Helpers de rutina_exercise
+  // ---------------------------------------------------------------------------
+  async function reloadDay(routineId: string): Promise<void> {
+    // Truco: usar reorder con los ids actuales fuerza re-fetch en el hook
+    const { data } = await supabase
+      .from('routine_exercises')
+      .select('id')
+      .eq('routine_id', routineId)
+      .order('position', { ascending: true });
+    if (data && data.length > 0) {
+      await reorder(
+        routineId,
+        data.map((r) => r.id as string)
+      );
+    }
+  }
+
+  async function addExerciseWithTarget(
+    routineId: string,
+    exerciseId: string,
+    targetSets: number
+  ): Promise<void> {
+    const safe = Math.max(1, Math.min(20, targetSets));
+
+    // Calcular la siguiente posición al final
+    const { data: maxPos } = await supabase
+      .from('routine_exercises')
+      .select('position')
+      .eq('routine_id', routineId)
+      .order('position', { ascending: false })
+      .limit(1);
+    const nextPos =
+      ((maxPos?.[0]?.position as number | undefined) ?? -1) + 1;
+
+    // Insertar con target
+    const { error } = await supabase.from('routine_exercises').insert({
+      routine_id: routineId,
+      exercise_id: exerciseId,
+      position: nextPos,
+      target_sets: safe,
+      target_reps_min: 8,
+      target_reps_max: 12,
+      target_rir: 2,
+      rest_seconds: 90,
+    });
+    if (error) throw error;
+
+    // Refrescar
+    await reloadDay(routineId);
+  }
+
+  async function updateRoutineExerciseTarget(
+    routineId: string,
+    routineExerciseId: string,
+    targetSets: number
+  ): Promise<void> {
+    const safe = Math.max(1, Math.min(20, targetSets));
+    const { error } = await supabase
+      .from('routine_exercises')
+      .update({ target_sets: safe })
+      .eq('id', routineExerciseId);
+    if (error) throw error;
+
+    await reloadDay(routineId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Catálogo
+  // ---------------------------------------------------------------------------
   if (catalogFor) {
     return (
       <CatalogScreen
         userId={userId}
         onBack={() => setCatalogFor(null)}
         onPick={(ex) => {
-          void addExercise(catalogFor, ex.id).then(() => setCatalogFor(null));
+          // NO añadimos directo: abrimos modal para elegir series objetivo
+          setPendingRoutineExercise({ routineId: catalogFor, exercise: ex });
+          setCatalogFor(null);
         }}
       />
     );
   }
 
-   async function handleCreatePlan(name: string, firstDay: number | null) {
+  async function handleCreatePlan(name: string, firstDay: number | null) {
     if (!name.trim()) return;
     try {
       await create({
@@ -106,13 +196,13 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
     }
     setCreatingPlan(false);
   }
+
   async function handleAddDay(
     planName: string,
     dayOfWeek: number,
     label: string | null,
     isRest: boolean
   ) {
-    // Buscar conflictos: entradas existentes en este plan + este día
     const conflicts = routines.filter(
       (r) =>
         (r.planName ?? r.name) === planName && r.dayOfWeek === dayOfWeek
@@ -132,7 +222,6 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
       );
       if (!ok) return;
 
-      // Borrar los conflictos antes de insertar el nuevo
       try {
         for (const c of conflicts) {
           await remove(c.id);
@@ -164,7 +253,7 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
 
   return (
     <div className="space-y-4">
-      {/* Header con título + badge comparativa + botones */}
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-[22px] font-extrabold tracking-tight">
@@ -376,9 +465,28 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
                                       {re.restSeconds}s
                                     </p>
                                   </div>
+                                  {/* Editar series objetivo */}
                                   <button
-                                    onClick={() => removeRoutineExercise(re.id)}
+                                    onClick={() => {
+                                      if (!re.exercise) return;
+                                      setEditingRoutineExercise({
+                                        routineId: day.id,
+                                        routineExerciseId: re.id,
+                                        exercise: re.exercise,
+                                        currentTargetSets: re.targetSets,
+                                      });
+                                    }}
+                                    className="flex h-5 w-5 items-center justify-center rounded text-zinc-600 hover:text-cyan-400"
+                                    aria-label="Editar series objetivo"
+                                  >
+                                    <Pencil size={10} />
+                                  </button>
+                                  <button
+                                    onClick={() =>
+                                      removeRoutineExercise(re.id)
+                                    }
                                     className="flex h-5 w-5 items-center justify-center rounded text-zinc-600 hover:text-red-400"
+                                    aria-label="Eliminar ejercicio"
                                   >
                                     <X size={10} />
                                   </button>
@@ -490,7 +598,7 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
         </div>
       )}
 
-      {/* Modales */}
+      {/* Modales existentes */}
       {creatingPlan && (
         <NewPlanModal
           onClose={() => setCreatingPlan(false)}
@@ -498,7 +606,7 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
         />
       )}
 
-            {addingDayFor && (
+      {addingDayFor && (
         <AddDayModal
           planName={addingDayFor}
           occupiedDays={routines
@@ -513,7 +621,7 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
         />
       )}
 
-        {renaming && (
+      {renaming && (
         <RenameDayModal
           routine={routines.find((r) => r.id === renaming)!}
           onClose={() => setRenaming(null)}
@@ -524,7 +632,6 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
               return;
             }
 
-            // Si el usuario cambió el día de la semana, comprobar conflictos
             if (
               patch.dayOfWeek !== undefined &&
               patch.dayOfWeek !== null &&
@@ -556,7 +663,10 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
                     await remove(c.id);
                   }
                 } catch (e) {
-                  console.error('[RenameDayModal] error borrando conflicto:', e);
+                  console.error(
+                    '[RenameDayModal] error borrando conflicto:',
+                    e
+                  );
                   alert('No se pudo reemplazar el día.');
                   return;
                 }
@@ -576,21 +686,63 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
         />
       )}
 
-     {exporting && (
-  <PlanExportSheet
-    routines={
-      plans.find((p) => p.name === exporting.planName)?.days ?? []
-    }
-    planName={exporting.planName}
-    onClose={() => setExporting(null)}
-  />
-)}
+      {exporting && (
+        <PlanExportSheet
+          routines={
+            plans.find((p) => p.name === exporting.planName)?.days ?? []
+          }
+          planName={exporting.planName}
+          onClose={() => setExporting(null)}
+        />
+      )}
+
+      {/* Modal series objetivo: al añadir un ejercicio nuevo */}
+      {pendingRoutineExercise && (
+        <TargetSetsModal
+          exercise={pendingRoutineExercise.exercise}
+          initialSets={DEFAULT_TARGET_SETS}
+          onCancel={() => setPendingRoutineExercise(null)}
+          onConfirm={async (n) => {
+            const { routineId, exercise } = pendingRoutineExercise;
+            setPendingRoutineExercise(null);
+            try {
+              await addExerciseWithTarget(routineId, exercise.id, n);
+            } catch (e) {
+              console.error('[addExerciseWithTarget] error:', e);
+              alert('No se pudo añadir el ejercicio.');
+            }
+          }}
+        />
+      )}
+
+      {/* Modal series objetivo: al editar un ejercicio existente */}
+      {editingRoutineExercise && (
+        <TargetSetsModal
+          exercise={editingRoutineExercise.exercise}
+          initialSets={editingRoutineExercise.currentTargetSets}
+          onCancel={() => setEditingRoutineExercise(null)}
+          onConfirm={async (n) => {
+            const { routineId, routineExerciseId } = editingRoutineExercise;
+            setEditingRoutineExercise(null);
+            try {
+              await updateRoutineExerciseTarget(
+                routineId,
+                routineExerciseId,
+                n
+              );
+            } catch (e) {
+              console.error('[updateRoutineExerciseTarget] error:', e);
+              alert('No se pudo actualizar las series.');
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
 
 // ===========================================================================
-// Modales
+// Modales auxiliares (sin cambios)
 // ===========================================================================
 
 function NewPlanModal({
@@ -708,7 +860,7 @@ function AddDayModal({
         </div>
         <p className="mb-4 text-xs text-zinc-500">Plan: {planName}</p>
 
-               <p className="mb-1.5 text-xs text-zinc-400">Día de la semana</p>
+        <p className="mb-1.5 text-xs text-zinc-400">Día de la semana</p>
         <div className="mb-3 flex flex-wrap gap-1.5">
           {DAY_LABELS.map((l, i) => {
             const occupied = occupiedDays.includes(i);
