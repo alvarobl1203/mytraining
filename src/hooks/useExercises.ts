@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { toActiveExerciseType } from '../lib/disciplines';
 import type { Exercise, MuscleGroup } from '../types';
 
 function rowToExercise(r: Record<string, unknown>): Exercise {
@@ -27,8 +28,9 @@ function rowToExercise(r: Record<string, unknown>): Exercise {
     imageUrl: (r.image_url as string | null) ?? null,
     biomechanicalType:
       (r.biomechanical_type as Exercise['biomechanicalType']) ?? null,
-    // --- NUEVOS mapeos v3 ---
-    exerciseType: (r.exercise_type as Exercise['exerciseType']) ?? null,
+    // Solo se aceptan las 3 disciplinas activas. Cualquier otro valor
+    // heredado se mapea a null.
+    exerciseType: toActiveExerciseType(r.exercise_type),
     difficulty: (r.difficulty as Exercise['difficulty']) ?? null,
     jointStress: Array.isArray(r.joint_stress)
       ? (r.joint_stress as string[])
@@ -60,6 +62,7 @@ export function useExercises() {
     const { data, error } = await supabase
       .from('exercises')
       .select('*')
+      .eq('is_active', true)
       .order('name', { ascending: true });
     if (!error && data) setExercises(data.map(rowToExercise));
     setLoading(false);
@@ -91,6 +94,7 @@ export function useExercises() {
         equipment: payload.equipment,
         instructions: payload.instructions,
         is_public: false,
+        exercise_type: 'gym',
       });
       if (error) throw error;
       await reload();

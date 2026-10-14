@@ -8,6 +8,8 @@ export interface UserPreferences {
   enabledTechniques: string[];
   showTechniqueHints: boolean;
   showVolumePanel: boolean;
+  /** Descanso por defecto global en segundos. */
+  restDefaultSec: number;
 }
 
 const DEFAULT_PREFS: UserPreferences = {
@@ -16,6 +18,8 @@ const DEFAULT_PREFS: UserPreferences = {
   enabledTechniques: [],
   showTechniqueHints: false,
   showVolumePanel: true,
+  /** 2 minutos y medio. */
+  restDefaultSec: 150,
 };
 
 export function useUserPreferences(userId: string | null) {
@@ -29,6 +33,7 @@ export function useUserPreferences(userId: string | null) {
       enabledTechniques: profile.enabledTechniques,
       showTechniqueHints: profile.showTechniqueHints,
       showVolumePanel: profile.showVolumePanel,
+      restDefaultSec: profile.restDefaultSec,
     };
   }, [profile]);
 
@@ -49,6 +54,9 @@ export function useUserPreferences(userId: string | null) {
         }),
         ...(patch.showVolumePanel !== undefined && {
           showVolumePanel: patch.showVolumePanel,
+        }),
+        ...(patch.restDefaultSec !== undefined && {
+          restDefaultSec: patch.restDefaultSec,
         }),
       });
     },

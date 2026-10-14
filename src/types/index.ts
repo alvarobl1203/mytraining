@@ -25,7 +25,7 @@ export type BiomechanicalType =
   | 'Empuje' | 'Jalón' | 'Pierna' | 'Core' | 'Cardio' | 'Otro';
 
 export type ExerciseType =
-  | 'gym' | 'calistenia' | 'hyrox' | 'crossfit' | 'cardio';
+  | 'gym' | 'calistenia' | 'cardio';
 
 export type TrainingMode = 'simple' | 'assisted' | 'mixed';
 
@@ -78,6 +78,7 @@ export interface Profile {
   enabledTechniques: string[];
   showTechniqueHints: boolean;
   showVolumePanel: boolean;
+  restDefaultSec: number;
 }
 
 export interface Routine {

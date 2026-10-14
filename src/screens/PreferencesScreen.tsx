@@ -27,6 +27,14 @@ const TRAINING_MODES: {
   },
 ];
 
+const REST_DEFAULT_OPTIONS: number[] = [30, 60, 90, 120, 150, 180, 240, 300];
+
+function formatRest(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const min = seconds / 60;
+  return Number.isInteger(min) ? `${min} min` : `${min.toFixed(1)} min`;
+}
+
 export function PreferencesScreen({
   profile,
   onSave,
@@ -67,7 +75,6 @@ export function PreferencesScreen({
       </header>
 
       <div className="mx-auto max-w-md space-y-4 px-4 py-4">
-        {/* Modo */}
         <section className="space-y-2">
           <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
             Modo de entrenamiento
@@ -108,7 +115,6 @@ export function PreferencesScreen({
           })}
         </section>
 
-        {/* Disciplinas */}
         <section className="space-y-2">
           <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
             Disciplinas
@@ -135,7 +141,39 @@ export function PreferencesScreen({
           </div>
         </section>
 
-        {/* Técnicas (solo si no es simple) */}
+        <section className="space-y-2">
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
+            Descanso por defecto
+          </p>
+          <p className="text-[11px] leading-relaxed text-zinc-500">
+            Tiempo que se usará al iniciar un descanso en ejercicios que no
+            tengan uno específico definido.
+          </p>
+          <div className="grid grid-cols-4 gap-2">
+            {REST_DEFAULT_OPTIONS.map((s) => {
+              const active = profile.restDefaultSec === s;
+              return (
+                <button
+                  key={s}
+                  onClick={() => onSave({ restDefaultSec: s })}
+                  className={`rounded-2xl border py-2.5 text-xs font-medium transition ${
+                    active
+                      ? 'border-cyan-500/60 bg-cyan-500/10 text-cyan-200'
+                      : 'border-zinc-800 bg-zinc-900/60 text-zinc-300 hover:border-zinc-700'
+                  }`}
+                >
+                  {formatRest(s)}
+                </button>
+              );
+            })}
+          </div>
+          {!REST_DEFAULT_OPTIONS.includes(profile.restDefaultSec) && (
+            <p className="text-[10px] text-zinc-500">
+              Valor actual: {formatRest(profile.restDefaultSec)} (personalizado)
+            </p>
+          )}
+        </section>
+
         {profile.trainingMode !== 'simple' && (
           <section className="space-y-2">
             <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
@@ -200,7 +238,6 @@ export function PreferencesScreen({
           </section>
         )}
 
-        {/* Interfaz */}
         <section className="space-y-2">
           <p className="text-[11px] font-semibold uppercase tracking-widest text-zinc-500">
             Interfaz

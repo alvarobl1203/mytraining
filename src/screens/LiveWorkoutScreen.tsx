@@ -18,8 +18,9 @@ import { useWorkouts } from '../hooks/useWorkouts';
 import { useRoutines } from '../hooks/useRoutines';
 import { useExercises } from '../hooks/useExercises';
 import { useUserPreferences } from '../hooks/useUserPreferences';
+import { useLatestBodyweight } from '../hooks/useLatestBodyweight';
 import { CatalogScreen } from './CatalogScreen';
-import { RestTimer } from '../components/RestTimer';
+import { RestOverlay } from '../components/RestOverlay';
 import { MuscleBadges } from '../components/MuscleBadges';
 import { PostWorkoutSummary } from '../components/PostWorkoutSummary';
 import { ImmersiveWorkoutScreen } from './ImmersiveWorkoutScreen';
@@ -42,6 +43,9 @@ type Props = {
 };
 
 const DEFAULT_TARGET_SETS = 3;
+const REST_MIN_SEC = 5;
+const REST_MAX_SEC = 900;
+const LEGACY_ROUTINE_REST = 90;
 
 export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
   const {
@@ -57,10 +61,10 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
   const { routines } = useRoutines(userId);
   const { exercises } = useExercises();
   const { preferences } = useUserPreferences(userId);
+  const userBodyweightKg = useLatestBodyweight(userId);
 
   const [started, setStarted] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [timerOpen, setTimerOpen] = useState(false);
   const [gymMode, setGymMode] = useState(false);
   const [immersive, setImmersive] = useState(false);
   const [current, setCurrent] = useState<{
@@ -72,16 +76,21 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
   );
   const [showSummary, setShowSummary] = useState<string | null>(null);
 
-  // Ejercicios añadidos en caliente (van al final)
   const [addedExerciseIds, setAddedExerciseIds] = useState<string[]>([]);
-  // Targets personalizados del usuario (sobrescriben rutina/default)
   const [customTargets, setCustomTargets] = useState<Record<string, number>>({});
-  // Ejercicio pendiente de configurar series (modal TargetSetsModal)
+  const [customRestSeconds, setCustomRestSeconds] = useState<
+    Record<string, number>
+  >({});
   const [pendingExercise, setPendingExercise] = useState<Exercise | null>(null);
-  // Flag: venimos del inmersivo a añadir un ejercicio
   const [returnToImmersive, setReturnToImmersive] = useState(false);
-  // Ejercicio al que saltar al reabrir el inmersivo
   const [newExerciseId, setNewExerciseId] = useState<string | null>(null);
+
+  const [restingInfo, setRestingInfo] = useState<{
+    exerciseId: string;
+    exerciseName: string;
+    nextSetNumber: number;
+    initialSeconds: number;
+  } | null>(null);
 
   const routine = useMemo(
     () => routines.find((r) => r.id === routineId) ?? null,
@@ -126,18 +135,11 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
     }
   }, [started, activeWorkout, routineId, startWorkout]);
 
-  // ---------------------------------------------------------------------------
-  // Ejercicios del entreno, en orden:
-  //   1. Primero los de la rutina (orden original)
-  //   2. Después los añadidos en caliente (orden de adición)
-  //   3. Por último cualquier huérfano con series (fallback)
-  // ---------------------------------------------------------------------------
   const workoutExercises = useMemo(() => {
     const ordered: Exercise[] = [];
     const seen = new Set<string>();
     const byId = new Map(exercises.map((e) => [e.id, e]));
 
-    // 1. Rutina
     if (routine) {
       routine.exercises.forEach((re) => {
         if (seen.has(re.exerciseId)) return;
@@ -149,7 +151,6 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
       });
     }
 
-    // 2. Añadidos en caliente (van al final)
     addedExerciseIds.forEach((id) => {
       if (seen.has(id)) return;
       const ex = byId.get(id);
@@ -159,7 +160,6 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
       }
     });
 
-    // 3. Fallback
     sets.forEach((s) => {
       if (seen.has(s.exerciseId)) return;
       const ex = byId.get(s.exerciseId);
@@ -172,7 +172,6 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
     return ordered;
   }, [sets, routine, exercises, addedExerciseIds]);
 
-  // Mapa de targets: rutina (base) + custom (override)
   const targetSetsByExercise = useMemo(() => {
     const map = new Map<string, number>();
     if (routine) {
@@ -184,14 +183,44 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
     return map;
   }, [routine, customTargets]);
 
+  const restSecondsForExercise = useMemo(() => {
+    return (exerciseId: string): number => {
+      const override = customRestSeconds[exerciseId];
+      if (override !== undefined) return override;
+
+      if (routine) {
+        const re = routine.exercises.find((x) => x.exerciseId === exerciseId);
+        if (
+          re &&
+          re.restSeconds &&
+          re.restSeconds !== LEGACY_ROUTINE_REST
+        ) {
+          return re.restSeconds;
+        }
+      }
+
+      const ex = exercises.find((e) => e.id === exerciseId);
+      if (ex?.restSuggested) return ex.restSuggested;
+
+      return preferences.restDefaultSec;
+    };
+  }, [customRestSeconds, routine, exercises, preferences.restDefaultSec]);
+
   function updateTarget(exerciseId: string, n: number) {
     const safe = Math.max(1, Math.min(20, n));
     setCustomTargets((prev) => ({ ...prev, [exerciseId]: safe }));
   }
 
-  // ---------------------------------------------------------------------------
-  // Picker (catálogo)
-  // ---------------------------------------------------------------------------
+  function updateRestSeconds(exerciseId: string, seconds: number) {
+    const safe = Math.max(REST_MIN_SEC, Math.min(REST_MAX_SEC, seconds));
+    setCustomRestSeconds((prev) => ({ ...prev, [exerciseId]: safe }));
+  }
+
+  function handleRestOverlayChange(seconds: number) {
+    if (!restingInfo) return;
+    updateRestSeconds(restingInfo.exerciseId, seconds);
+  }
+
   if (pickerOpen) {
     return (
       <CatalogScreen
@@ -204,7 +233,6 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
           }
         }}
         onPick={(ex) => {
-          // NO abrimos SetLogger. Abrimos el modal de series objetivo.
           setPendingExercise(ex);
           setPickerOpen(false);
         }}
@@ -212,22 +240,19 @@ export function LiveWorkoutScreen({ userId, routineId, onClose }: Props) {
     );
   }
 
-// Mostrar la pantalla aunque activeWorkout sea null si estamos mostrando el
-// resumen final (acabamos de terminar el entreno y PostWorkoutSummary debe
-// renderizarse por encima de este bloque).
-if (!activeWorkout && !showSummary) {
-  return (
-    <div className="flex h-64 items-center justify-center">
-      <p className="text-sm text-zinc-500">Preparando entrenamiento…</p>
-    </div>
-  );
-}
+  if (!activeWorkout && !showSummary) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <p className="text-sm text-zinc-500">Preparando entrenamiento…</p>
+      </div>
+    );
+  }
 
   const isCardio = (e: Exercise) => e.category === 'Cardio';
+  const isBodyweight = (e: Exercise) => e.equipment === 'Peso Corporal';
 
   return (
     <div className="space-y-4">
-      {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <button
           onClick={async () => {
@@ -296,6 +321,7 @@ if (!activeWorkout && !showSummary) {
         const exSets = sets.filter((s) => s.exerciseId === ex.id);
         const lastSet = exSets[exSets.length - 1] ?? null;
         const target = targetSetsByExercise.get(ex.id) ?? DEFAULT_TARGET_SETS;
+        const bw = isBodyweight(ex);
 
         return (
           <div
@@ -304,13 +330,20 @@ if (!activeWorkout && !showSummary) {
           >
             <div className="mb-3">
               <div className="flex items-baseline justify-between gap-2">
-                <h3
-                  className={`min-w-0 flex-1 truncate font-semibold ${
-                    gymMode ? 'text-lg' : 'text-sm'
-                  }`}
-                >
-                  {ex.name}
-                </h3>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <h3
+                    className={`min-w-0 truncate font-semibold ${
+                      gymMode ? 'text-lg' : 'text-sm'
+                    }`}
+                  >
+                    {ex.name}
+                  </h3>
+                  {bw && (
+                    <span className="shrink-0 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-cyan-300">
+                      Peso corporal
+                    </span>
+                  )}
+                </div>
                 <span className="shrink-0 rounded-full border border-zinc-800 bg-zinc-950/60 px-2 py-0.5 text-[10px] tabular-nums text-zinc-400">
                   {exSets.length}/{target}
                 </span>
@@ -324,73 +357,90 @@ if (!activeWorkout && !showSummary) {
             </div>
 
             <div className="space-y-1.5">
-              {exSets.map((s) => (
-                <div
-                  key={s.localId}
-                  className={`flex items-center gap-2 rounded-xl border border-zinc-800/60 bg-zinc-950/60 px-2.5 py-2 ${
-                    gymMode ? 'text-base' : 'text-xs'
-                  }`}
-                >
-                  <span className="w-6 text-zinc-500">#{s.setNumber}</span>
+              {exSets.map((s) => {
+                const hasExtra = s.weightKg !== null && s.weightKg > 0;
+                const display = bw
+                  ? hasExtra
+                    ? `Peso corporal + ${s.weightKg} kg × ${s.reps ?? 0}`
+                    : `Peso corporal × ${s.reps ?? 0}`
+                  : isCardio(ex)
+                    ? ''
+                    : `${s.weightKg ?? 0} kg × ${s.reps ?? 0}`;
 
-                  {isCardio(ex) ? (
-                    <span
-                      className={`flex-1 text-zinc-300 ${
-                        gymMode ? 'font-bold' : ''
-                      }`}
-                    >
-                      {s.cardioSeconds
-                        ? `${Math.round(s.cardioSeconds / 60)} min`
-                        : ''}
-                      {s.cardioKm ? ` · ${s.cardioKm} km` : ''}
-                      {s.cardioKcal ? ` · ${s.cardioKcal} kcal` : ''}
-                    </span>
-                  ) : (
-                    <span
-                      className={`flex-1 text-zinc-300 ${
-                        gymMode ? 'font-bold' : ''
-                      }`}
-                    >
-                      {s.weightKg} kg × {s.reps} · RIR {s.rir}
-                      {s.technique !== 'Normal' && (
-                        <span className="ml-1.5 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-300">
-                          {s.technique}
-                        </span>
-                      )}
-                    </span>
-                  )}
-
-                  {s.syncStatus === 'pending' && (
-                    <Loader2
-                      size={12}
-                      className="shrink-0 animate-spin text-zinc-600"
-                      aria-label="Guardando"
-                    />
-                  )}
-                  {s.syncStatus === 'queued' && (
-                    <CloudOff
-                      size={12}
-                      className="shrink-0 text-amber-400"
-                      aria-label="Pendiente de sincronizar"
-                    />
-                  )}
-
-                  {s.notes && (
-                    <MessageSquare
-                      size={12}
-                      className="shrink-0 text-cyan-400"
-                    />
-                  )}
-
-                  <button
-                    onClick={() => removeSet(s.localId)}
-                    className="text-zinc-600 hover:text-red-400"
-                    aria-label="Borrar serie"
+                return (
+                  <div
+                    key={s.localId}
+                    className={`flex items-center gap-2 rounded-xl border border-zinc-800/60 bg-zinc-950/60 px-2.5 py-2 ${
+                      gymMode ? 'text-base' : 'text-xs'
+                    }`}
                   >
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              ))}
+                    <span className="w-6 text-zinc-500">#{s.setNumber}</span>
+
+                    {isCardio(ex) ? (
+                      <span
+                        className={`flex-1 text-zinc-300 ${
+                          gymMode ? 'font-bold' : ''
+                        }`}
+                      >
+                        {s.cardioSeconds
+                          ? `${Math.round(s.cardioSeconds / 60)} min`
+                          : ''}
+                        {s.cardioKm ? ` · ${s.cardioKm} km` : ''}
+                        {s.cardioKcal ? ` · ${s.cardioKcal} kcal` : ''}
+                      </span>
+                    ) : (
+                      <span
+                        className={`flex-1 text-zinc-300 ${
+                          gymMode ? 'font-bold' : ''
+                        }`}
+                      >
+                        {display}
+                        {s.technique !== 'Normal' && (
+                          <span className="ml-1.5 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] text-blue-300">
+                            {s.technique}
+                          </span>
+                        )}
+                      </span>
+                    )}
+
+                    {!isCardio(ex) && (
+                      <span className="shrink-0 text-[10px] tabular-nums text-zinc-500">
+                        RIR {s.rir ?? '—'}
+                      </span>
+                    )}
+
+                    {s.syncStatus === 'pending' && (
+                      <Loader2
+                        size={12}
+                        className="shrink-0 animate-spin text-zinc-600"
+                        aria-label="Guardando"
+                      />
+                    )}
+                    {s.syncStatus === 'queued' && (
+                      <CloudOff
+                        size={12}
+                        className="shrink-0 text-amber-400"
+                        aria-label="Pendiente de sincronizar"
+                      />
+                    )}
+
+                    {s.notes && (
+                      <MessageSquare
+                        size={12}
+                        className="shrink-0 text-cyan-400"
+                      />
+                    )}
+
+                    <button
+                      onClick={() => removeSet(s.localId)}
+                      className="text-zinc-600 hover:text-red-400"
+                      aria-label="Borrar serie"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
 
             <div className="mt-2 flex gap-2">
@@ -444,20 +494,30 @@ if (!activeWorkout && !showSummary) {
           onClose={() => setCurrent(null)}
           onSaved={(payload, useTimer) => {
             logSet(payload);
+            if (useTimer && current) {
+              setRestingInfo({
+                exerciseId: current.exercise.id,
+                exerciseName: current.exercise.name,
+                nextSetNumber: current.setNumber + 1,
+                initialSeconds: restSecondsForExercise(current.exercise.id),
+              });
+            }
             setCurrent(null);
-            if (useTimer) setTimerOpen(true);
           }}
         />
       )}
 
-      {timerOpen && (
-        <RestTimer
-          onFinish={() => setTimerOpen(false)}
-          onCancel={() => setTimerOpen(false)}
+      {restingInfo && (
+        <RestOverlay
+          exerciseName={restingInfo.exerciseName}
+          nextSetNumber={restingInfo.nextSetNumber}
+          initialSeconds={restingInfo.initialSeconds}
+          onFinish={() => setRestingInfo(null)}
+          onCancel={() => setRestingInfo(null)}
+          onChangeSeconds={handleRestOverlayChange}
         />
       )}
 
-      {/* Modal de series objetivo (tras elegir ejercicio del catálogo) */}
       {pendingExercise && (
         <TargetSetsModal
           exercise={pendingExercise}
@@ -475,11 +535,9 @@ if (!activeWorkout && !showSummary) {
             const ex = pendingExercise;
             setPendingExercise(null);
 
-            // Añadir al final de la lista
             setAddedExerciseIds((prev) =>
               prev.includes(ex.id) ? prev : [...prev, ex.id]
             );
-            // Guardar target
             updateTarget(ex.id, n);
 
             if (returnToImmersive) {
@@ -491,31 +549,33 @@ if (!activeWorkout && !showSummary) {
         />
       )}
 
-      {/* Modo inmersivo */}
-   {immersive && (
-  <ImmersiveWorkoutScreen
-    exercises={workoutExercises}
-    sets={sets}
-    targets={targetSetsByExercise}
-    onChangeTarget={updateTarget}
-    onLogSet={logSet}
-    onFinish={async () => {
-      if (!activeWorkout) return;
-      setImmersive(false);
-      const id = activeWorkout.id;
-      await finishWorkout();
-      setShowSummary(id);
-    }}
-    onClose={() => setImmersive(false)}
-    onAddExercise={() => {
-      setReturnToImmersive(true);
-      setImmersive(false);
-      setPickerOpen(true);
-    }}
-    initialExerciseId={newExerciseId ?? undefined}
-    onConsumeInitialExercise={() => setNewExerciseId(null)}
-  />
-)}
+      {immersive && (
+        <ImmersiveWorkoutScreen
+          exercises={workoutExercises}
+          sets={sets}
+          targets={targetSetsByExercise}
+          onChangeTarget={updateTarget}
+          restSecondsForExercise={restSecondsForExercise}
+          onChangeRestForExercise={updateRestSeconds}
+          onLogSet={logSet}
+          onFinish={async () => {
+            if (!activeWorkout) return;
+            setImmersive(false);
+            const id = activeWorkout.id;
+            await finishWorkout();
+            setShowSummary(id);
+          }}
+          onClose={() => setImmersive(false)}
+          onAddExercise={() => {
+            setReturnToImmersive(true);
+            setImmersive(false);
+            setPickerOpen(true);
+          }}
+          initialExerciseId={newExerciseId ?? undefined}
+          onConsumeInitialExercise={() => setNewExerciseId(null)}
+          userBodyweightKg={userBodyweightKg}
+        />
+      )}
 
       {showSummary && (
         <PostWorkoutSummary
@@ -534,7 +594,7 @@ if (!activeWorkout && !showSummary) {
 }
 
 // ---------------------------------------------------------------------------
-// SetLogger
+// SetLogger (sin cambios)
 // ---------------------------------------------------------------------------
 function SetLogger({
   exercise,

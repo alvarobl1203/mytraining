@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   X,
   Check,
@@ -8,10 +8,22 @@ import {
   Plus,
   SkipForward,
   Circle,
-  AlertTriangle
+  AlertTriangle,
 } from 'lucide-react';
 import { MuscleBadges } from '../components/MuscleBadges';
 import { estimateOneRm } from '../lib/calculations';
+import {
+  stepValue,
+  safeParseNumber,
+  safeParseInteger,
+  isIntegerDraft,
+  formatDisplay,
+  clamp,
+} from '../lib/numeric';
+import {
+  saveImmersiveRest,
+  loadImmersiveRest,
+} from '../lib/restPersistence';
 import { useWakeLock } from '../hooks/useWakeLock';
 import {
   notifyRestComplete,
@@ -22,29 +34,94 @@ import {
 import type { ActiveSet } from '../hooks/useWorkouts';
 import type { Exercise } from '../types';
 
-const DEFAULT_REST_SEC = 90;
 const REST_STEP_SEC = 15;
 const REST_MIN_SEC = 5;
 const REST_MAX_SEC = 900;
 const DEFAULT_TARGET_SETS = 3;
 const AUTO_ADVANCE_MS = 900;
 
+const DEFAULT_WEIGHT_KG = 50;
+const DEFAULT_REPS = 8;
+const DEFAULT_RIR = 1;
+const WEIGHT_STEP = 0.5;
+const WEIGHT_MIN = 0;
+const WEIGHT_MAX = 999;
+const REPS_MIN = 1;
+const REPS_MAX = 999;
+const RIR_MIN = 0;
+const RIR_MAX = 10;
+
+function useLongPress(
+  onFire: () => void,
+  { delayMs = 500, intervalMs = 80 }: { delayMs?: number; intervalMs?: number } = {}
+) {
+  const onFireRef = useRef(onFire);
+  useEffect(() => {
+    onFireRef.current = onFire;
+  }, [onFire]);
+
+  const timeoutRef = useRef<number | null>(null);
+  const intervalRef = useRef<number | null>(null);
+
+  const stop = useCallback(() => {
+    if (timeoutRef.current !== null) {
+      window.clearTimeout(timeoutRef.current);
+      timeoutRef.current = null;
+    }
+    if (intervalRef.current !== null) {
+      window.clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, []);
+
+  const start = useCallback(() => {
+    onFireRef.current();
+    timeoutRef.current = window.setTimeout(() => {
+      intervalRef.current = window.setInterval(() => {
+        onFireRef.current();
+      }, intervalMs);
+    }, delayMs);
+  }, [delayMs, intervalMs]);
+
+  useEffect(() => () => stop(), [stop]);
+
+  return {
+    onPointerDown: start,
+    onPointerUp: stop,
+    onPointerLeave: stop,
+    onPointerCancel: stop,
+  };
+}
+
+function hapticTick() {
+  try {
+    if ('vibrate' in navigator) navigator.vibrate(8);
+  } catch {
+    // ignore
+  }
+}
+
 export function ImmersiveWorkoutScreen({
   exercises,
   sets,
   targets,
   onChangeTarget,
+  restSecondsForExercise,
+  onChangeRestForExercise,
   onLogSet,
   onFinish,
   onClose,
   onAddExercise,
   initialExerciseId,
   onConsumeInitialExercise,
+  userBodyweightKg,
 }: {
   exercises: Exercise[];
   sets: ActiveSet[];
   targets: Map<string, number>;
   onChangeTarget: (exerciseId: string, sets: number) => void;
+  restSecondsForExercise: (exerciseId: string) => number;
+  onChangeRestForExercise?: (exerciseId: string, seconds: number) => void;
   onLogSet: (
     s: Omit<ActiveSet, 'localId' | 'remoteId' | 'syncStatus'>
   ) => void;
@@ -53,32 +130,29 @@ export function ImmersiveWorkoutScreen({
   onAddExercise?: () => void;
   initialExerciseId?: string;
   onConsumeInitialExercise?: () => void;
+  /** Peso corporal efectivo. NUNCA se muestra en la UI, solo para cálculos. */
+  userBodyweightKg?: number | null;
 }) {
   const [currentIdx, setCurrentIdx] = useState(0);
-  const [weight, setWeight] = useState<number>(0);
-  const [reps, setReps] = useState<number>(8);
-  const [rir, setRir] = useState<number>(2);
+  const [weight, setWeight] = useState<number>(DEFAULT_WEIGHT_KG);
+  const [reps, setReps] = useState<number>(DEFAULT_REPS);
+  const [rir, setRir] = useState<number>(DEFAULT_RIR);
 
-  // Descanso
-  const [restDurationSec, setRestDurationSec] = useState(DEFAULT_REST_SEC);
+  const [restDurationSec, setRestDurationSec] = useState(90);
   const [restEndTime, setRestEndTime] = useState<number | null>(null);
   const [restRemaining, setRestRemaining] = useState(0);
-  const [restInputDraft, setRestInputDraft] = useState<string>(
-    String(DEFAULT_REST_SEC)
-  );
+  const [restInputDraft, setRestInputDraft] = useState<string>('90');
   const restActive = restEndTime !== null;
 
-  // Flags
   const [justCompletedExercise, setJustCompletedExercise] = useState(false);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
-  // Marca: cuando el descanso actual termine (natural o saltado), finalizar
   const [pendingAutoFinish, setPendingAutoFinish] = useState(false);
 
   const notificationsReadyRef = useRef(false);
+  const hydratedRestRef = useRef(false);
 
   useWakeLock(true);
 
-  // Permiso de notificaciones
   useEffect(() => {
     (async () => {
       const ok = await requestNotificationPermission();
@@ -86,7 +160,30 @@ export function ImmersiveWorkoutScreen({
     })();
   }, []);
 
-  // Salto inicial a un ejercicio concreto
+  useEffect(() => {
+    const saved = loadImmersiveRest();
+    if (saved) {
+      setRestDurationSec(saved.durationSec);
+      setRestEndTime(saved.endTime);
+      setRestRemaining(
+        Math.max(0, Math.ceil((saved.endTime - Date.now()) / 1000))
+      );
+    }
+    hydratedRestRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedRestRef.current) return;
+    if (restEndTime) {
+      saveImmersiveRest({
+        endTime: restEndTime,
+        durationSec: restDurationSec,
+      });
+    } else {
+      saveImmersiveRest(null);
+    }
+  }, [restEndTime, restDurationSec]);
+
   useEffect(() => {
     if (!initialExerciseId) return;
     const idx = exercises.findIndex((e) => e.id === initialExerciseId);
@@ -99,6 +196,8 @@ export function ImmersiveWorkoutScreen({
   }, [initialExerciseId, exercises, onConsumeInitialExercise]);
 
   const currentExercise = exercises[currentIdx];
+  const isBodyweight = currentExercise?.equipment === 'Peso Corporal';
+
   const currentSets = useMemo(
     () => sets.filter((s) => s.exerciseId === currentExercise?.id),
     [sets, currentExercise]
@@ -114,28 +213,47 @@ export function ImmersiveWorkoutScreen({
     : DEFAULT_TARGET_SETS;
 
   const isLastExercise = currentIdx >= exercises.length - 1;
-  const targetReached =
-    !!currentExercise && currentSets.length >= targetSets;
+  const targetReached = !!currentExercise && currentSets.length >= targetSets;
+
+  /**
+   * 1RM: para peso corporal sumamos el bodyweight internamente.
+   * El resultado se muestra como un único número; nunca exponemos el
+   * desglose (evita filtrar el peso del usuario).
+   */
+  const effectiveLoad =
+    isBodyweight && userBodyweightKg != null
+      ? userBodyweightKg + weight
+      : weight;
 
   const estimated1Rm =
-    weight > 0 && reps > 0 ? estimateOneRm(weight, reps, rir) : 0;
+    effectiveLoad > 0 && reps > 0
+      ? estimateOneRm(effectiveLoad, reps, rir)
+      : 0;
 
-  // Precargar peso/reps/RIR al cambiar de ejercicio
   useEffect(() => {
     const last = currentSets[currentSets.length - 1];
     if (last) {
       if (last.weightKg !== null) setWeight(last.weightKg);
       if (last.reps !== null) setReps(last.reps);
       if (last.rir !== null) setRir(last.rir);
+    } else {
+      const bw = currentExercise?.equipment === 'Peso Corporal';
+      setWeight(bw ? 0 : DEFAULT_WEIGHT_KG);
+      setReps(DEFAULT_REPS);
+      setRir(DEFAULT_RIR);
     }
-  }, [currentExercise?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentExercise?.id]);
 
-  // Sincroniza draft de descanso
   useEffect(() => {
-    setRestInputDraft(String(restDurationSec));
-  }, [restDurationSec]);
+    if (!currentExercise) return;
+    const s = restSecondsForExercise(currentExercise.id);
+    const safe = Math.max(REST_MIN_SEC, Math.min(REST_MAX_SEC, Math.round(s)));
+    setRestDurationSec(safe);
+    setRestInputDraft(String(safe));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentExercise?.id]);
 
-  // Timer + auto-finish
   useEffect(() => {
     if (!restEndTime) return;
 
@@ -153,7 +271,6 @@ export function ImmersiveWorkoutScreen({
         if (currentExercise) {
           notifyRestComplete(currentExercise.name, nextSetNumber);
         }
-        // Si toca auto-finalizar (última serie del último ejercicio), lo hacemos
         if (pendingAutoFinish) {
           setPendingAutoFinish(false);
           onFinish();
@@ -162,20 +279,17 @@ export function ImmersiveWorkoutScreen({
     };
 
     tick();
-    const id = setInterval(tick, 250);
+    const id = window.setInterval(tick, 250);
     const onVis = () => tick();
     document.addEventListener('visibilitychange', onVis);
 
     return () => {
-      clearInterval(id);
+      window.clearInterval(id);
       document.removeEventListener('visibilitychange', onVis);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restEndTime, currentExercise?.id, nextSetNumber, pendingAutoFinish]);
 
-  // ---------------------------------------------------------------------------
-  // Acciones
-  // ---------------------------------------------------------------------------
   function startRest(seconds: number) {
     const safe = Math.max(REST_MIN_SEC, Math.min(REST_MAX_SEC, seconds));
     setRestDurationSec(safe);
@@ -184,14 +298,29 @@ export function ImmersiveWorkoutScreen({
 
   function adjustRest(deltaSec: number) {
     if (!restEndTime) {
-      setRestDurationSec((d) =>
-        Math.max(REST_MIN_SEC, Math.min(REST_MAX_SEC, d + deltaSec))
-      );
+      setRestDurationSec((d) => {
+        const next = Math.max(
+          REST_MIN_SEC,
+          Math.min(REST_MAX_SEC, d + deltaSec)
+        );
+        if (currentExercise) {
+          onChangeRestForExercise?.(currentExercise.id, next);
+        }
+        return next;
+      });
       return;
     }
     const next = restEndTime + deltaSec * 1000;
     const minEnd = Date.now() + 5 * 1000;
     setRestEndTime(Math.max(minEnd, next));
+    if (currentExercise) {
+      const newDuration = Math.max(
+        REST_MIN_SEC,
+        Math.min(REST_MAX_SEC, restDurationSec + deltaSec)
+      );
+      setRestDurationSec(newDuration);
+      onChangeRestForExercise?.(currentExercise.id, newDuration);
+    }
   }
 
   function commitRestInput(raw: string) {
@@ -202,6 +331,9 @@ export function ImmersiveWorkoutScreen({
     }
     const rounded = Math.round(v);
     setRestDurationSec(rounded);
+    if (currentExercise) {
+      onChangeRestForExercise?.(currentExercise.id, rounded);
+    }
     if (restEndTime) {
       const elapsed = restDurationSec - restRemaining;
       const newRemaining = Math.max(REST_MIN_SEC, rounded - elapsed);
@@ -212,7 +344,6 @@ export function ImmersiveWorkoutScreen({
   function skipRest() {
     setRestEndTime(null);
     setRestRemaining(0);
-    // Si toca auto-finalizar (última serie del último ejercicio), lo hacemos
     if (pendingAutoFinish) {
       setPendingAutoFinish(false);
       onFinish();
@@ -221,7 +352,6 @@ export function ImmersiveWorkoutScreen({
 
   function extendTarget() {
     if (!currentExercise) return;
-    // Si el usuario amplía, cancelamos cualquier auto-finish pendiente
     setPendingAutoFinish(false);
     onChangeTarget(currentExercise.id, getTargetFor(currentExercise.id) + 1);
   }
@@ -246,11 +376,13 @@ export function ImmersiveWorkoutScreen({
       return;
     }
 
+    const weightForSave = weight > 0 ? weight : null;
+
     onLogSet({
       exerciseId: currentExercise.id,
       setNumber: nextSetNumber,
-      weightKg: weight || null,
-      reps: reps || null,
+      weightKg: weightForSave,
+      reps,
       rir,
       technique: 'Normal',
       cardioSeconds: null,
@@ -264,14 +396,12 @@ export function ImmersiveWorkoutScreen({
     const reachedNow = currentSets.length + 1 >= targetSets;
 
     if (reachedNow && isLastExercise) {
-      // Última serie del último ejercicio → descanso y auto-finalizar al acabar
       setPendingAutoFinish(true);
       startRest(restDurationSec);
     } else if (reachedNow && !isLastExercise) {
-      // Última serie de un ejercicio intermedio → flash + auto-avance
       setJustCompletedExercise(true);
       startRest(restDurationSec);
-      setTimeout(() => {
+      window.setTimeout(() => {
         setJustCompletedExercise(false);
         setCurrentIdx((i) => Math.min(exercises.length - 1, i + 1));
       }, AUTO_ADVANCE_MS);
@@ -287,12 +417,10 @@ export function ImmersiveWorkoutScreen({
   function confirmFinish() {
     setShowFinishConfirm(false);
     setPendingAutoFinish(false);
+    saveImmersiveRest(null);
     onFinish();
   }
 
-  // ---------------------------------------------------------------------------
-  // Derivados
-  // ---------------------------------------------------------------------------
   const totalLoggedSets = sets.length;
   const targetTotal = exercises.reduce((a, e) => a + getTargetFor(e.id), 0);
   const progressPct =
@@ -308,12 +436,8 @@ export function ImmersiveWorkoutScreen({
   const minutes = Math.floor(restRemaining / 60);
   const seconds = restRemaining % 60;
 
-  // ---------------------------------------------------------------------------
-  // Render
-  // ---------------------------------------------------------------------------
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-zinc-950">
-      {/* Flash de ejercicio completado */}
       {justCompletedExercise && (
         <div className="pointer-events-none absolute inset-0 z-[60] flex items-center justify-center">
           <div className="flex animate-scale-in items-center gap-2 rounded-2xl border border-emerald-500/40 bg-emerald-500/20 px-5 py-3 backdrop-blur">
@@ -324,7 +448,6 @@ export function ImmersiveWorkoutScreen({
         </div>
       )}
 
-      {/* Header */}
       <div className="flex items-center justify-between gap-2 px-4 pt-4 pb-2">
         <button
           onClick={onClose}
@@ -351,7 +474,6 @@ export function ImmersiveWorkoutScreen({
         </button>
       </div>
 
-      {/* Progreso global */}
       <div className="px-4">
         <div className="h-1 w-full overflow-hidden rounded-full bg-zinc-800">
           <div
@@ -364,7 +486,6 @@ export function ImmersiveWorkoutScreen({
         </p>
       </div>
 
-      {/* Contenido */}
       <div className="flex-1 overflow-y-auto px-5 py-4">
         {currentExercise ? (
           <>
@@ -380,7 +501,6 @@ export function ImmersiveWorkoutScreen({
               </div>
             </div>
 
-            {/* Indicador de series */}
             <div className="mt-5 flex flex-col items-center gap-3">
               <div className="flex items-center gap-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 px-5 py-2.5">
                 <div className="text-center">
@@ -405,7 +525,6 @@ export function ImmersiveWorkoutScreen({
                 </div>
               </div>
 
-              {/* Barra segmentada */}
               <div className="flex items-center gap-1.5">
                 {Array.from({
                   length: Math.max(targetSets, currentSets.length),
@@ -427,7 +546,6 @@ export function ImmersiveWorkoutScreen({
                 })}
               </div>
 
-              {/* Botones de gestión */}
               {currentSets.length > 0 && (
                 <div className="flex flex-wrap items-center justify-center gap-2">
                   <button
@@ -451,15 +569,15 @@ export function ImmersiveWorkoutScreen({
               )}
             </div>
 
-            {/* Inputs editables */}
-            <div className="mt-5 grid grid-cols-3 gap-3">
+            <div className="mt-5 grid grid-cols-3 gap-2">
               <BigEditableInput
-                label="Peso"
+                label={isBodyweight ? 'Peso extra' : 'Peso'}
                 value={weight}
                 onChange={setWeight}
-                step={2.5}
+                step={WEIGHT_STEP}
                 unit="kg"
-                min={0}
+                min={WEIGHT_MIN}
+                max={WEIGHT_MAX}
               />
               <BigEditableInput
                 label="Reps"
@@ -467,7 +585,9 @@ export function ImmersiveWorkoutScreen({
                 onChange={setReps}
                 step={1}
                 unit=""
-                min={0}
+                min={REPS_MIN}
+                max={REPS_MAX}
+                integerOnly
               />
               <BigEditableInput
                 label="RIR"
@@ -475,10 +595,20 @@ export function ImmersiveWorkoutScreen({
                 onChange={setRir}
                 step={1}
                 unit=""
-                min={0}
-                max={4}
+                min={RIR_MIN}
+                max={RIR_MAX}
+                integerOnly
               />
             </div>
+
+            {/* Hint sin exponer el peso corporal del usuario */}
+            {isBodyweight && (
+              <p className="mt-2 text-center text-[10px] leading-relaxed text-zinc-500">
+                {userBodyweightKg != null
+                  ? 'Añade "Peso extra" solo si llevas lastre. El peso corporal se aplica internamente.'
+                  : 'Registra tu peso en Perfil para calcular el volumen de forma privada.'}
+              </p>
+            )}
 
             {estimated1Rm > 0 && (
               <p className="mt-3 text-center text-[11px] text-cyan-400">
@@ -486,28 +616,37 @@ export function ImmersiveWorkoutScreen({
               </p>
             )}
 
-            {/* Series registradas */}
             {currentSets.length > 0 && (
               <div className="mt-5 space-y-1">
                 <p className="text-[10px] uppercase tracking-widest text-zinc-500">
                   Series de este ejercicio
                 </p>
-                {currentSets.map((s) => (
-                  <div
-                    key={s.localId}
-                    className="flex items-center justify-between rounded-lg border border-zinc-800/60 bg-zinc-900/40 px-3 py-1.5 text-xs"
-                  >
-                    <span className="text-zinc-500">#{s.setNumber}</span>
-                    <span className="font-medium tabular-nums text-zinc-200">
-                      {s.weightKg} kg × {s.reps}
-                    </span>
-                    <span className="text-zinc-500">RIR {s.rir}</span>
-                  </div>
-                ))}
+                {currentSets.map((s) => {
+                  const hasExtra = s.weightKg !== null && s.weightKg > 0;
+                  const display = isBodyweight
+                    ? hasExtra
+                      ? `Peso corporal + ${s.weightKg} kg × ${s.reps ?? 0}`
+                      : `Peso corporal × ${s.reps ?? 0}`
+                    : `${s.weightKg ?? 0} kg × ${s.reps ?? 0}`;
+
+                  return (
+                    <div
+                      key={s.localId}
+                      className="flex items-center justify-between rounded-lg border border-zinc-800/60 bg-zinc-900/40 px-3 py-1.5 text-xs"
+                    >
+                      <span className="text-zinc-500">#{s.setNumber}</span>
+                      <span className="font-medium tabular-nums text-zinc-200">
+                        {display}
+                      </span>
+                      <span className="text-zinc-500">
+                        RIR {s.rir ?? '—'}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
-            {/* Lista de ejercicios del entreno */}
             <div className="mt-6 border-t border-zinc-800 pt-4">
               <p className="mb-2 text-[10px] uppercase tracking-widest text-zinc-500">
                 Ejercicios del entreno
@@ -587,9 +726,7 @@ export function ImmersiveWorkoutScreen({
         )}
       </div>
 
-      {/* Zona inferior */}
       <div className="border-t border-zinc-800/60 bg-zinc-950/95 px-4 pt-3 pb-6 backdrop-blur">
-        {/* Descanso */}
         <div className="mb-3 flex items-center justify-center gap-2">
           <button
             onClick={() => adjustRest(-REST_STEP_SEC)}
@@ -632,7 +769,6 @@ export function ImmersiveWorkoutScreen({
           </button>
         </div>
 
-        {/* Navegación + botón central */}
         <div className="flex items-center justify-center gap-6">
           <button
             onClick={() => jumpToExercise(currentIdx - 1)}
@@ -656,7 +792,7 @@ export function ImmersiveWorkoutScreen({
                 r={radius}
                 fill="none"
                 stroke="#18181b"
-                strokeWidth="10"
+                strokeWidth="8"
               />
               <circle
                 cx="100"
@@ -664,7 +800,7 @@ export function ImmersiveWorkoutScreen({
                 r={radius}
                 fill="none"
                 stroke="url(#immGrad)"
-                strokeWidth="10"
+                strokeWidth="8"
                 strokeLinecap="round"
                 strokeDasharray={circ}
                 strokeDashoffset={circ * (1 - pctRest)}
@@ -677,14 +813,17 @@ export function ImmersiveWorkoutScreen({
                 </linearGradient>
               </defs>
             </svg>
-            <div className="relative flex flex-col items-center">
+            <div className="relative flex flex-col items-center px-4 text-center">
               {restActive ? (
                 <>
-                  <p className="text-3xl font-extrabold tabular-nums text-cyan-400">
+                  <p className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+                    Descanso
+                  </p>
+                  <p className="mt-1 text-3xl font-extrabold tabular-nums text-cyan-400">
                     {minutes}:{String(seconds).padStart(2, '0')}
                   </p>
-                  <p className="text-[10px] uppercase tracking-widest text-zinc-500">
-                    Descanso · pulsa para saltar
+                  <p className="mt-1 text-[11px] text-zinc-300">
+                    Toca para saltar
                   </p>
                 </>
               ) : (
@@ -708,30 +847,17 @@ export function ImmersiveWorkoutScreen({
           </button>
         </div>
 
-        {/* Botones secundarios durante el descanso */}
         {restActive && (
-          <div className="mt-3 flex justify-center gap-2">
+          <div className="mt-3 flex justify-center">
             <button
               onClick={skipRest}
               className="flex items-center gap-1.5 rounded-xl border border-zinc-800 px-3 py-1.5 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-700"
             >
               <SkipForward size={12} /> Saltar descanso
             </button>
-            <button
-              onClick={() => {
-                const next = restEndTime
-                  ? restEndTime + 30 * 1000
-                  : Date.now() + 30 * 1000;
-                setRestEndTime(next);
-              }}
-              className="flex items-center gap-1.5 rounded-xl border border-zinc-800 px-3 py-1.5 text-[11px] font-medium text-zinc-300 transition-colors hover:border-zinc-700"
-            >
-              <Plus size={12} /> 30s
-            </button>
           </div>
         )}
 
-        {/* Aviso de auto-finish pendiente */}
         {pendingAutoFinish && (
           <p className="mt-3 text-center text-[10px] uppercase tracking-widest text-emerald-400">
             Al terminar el descanso, se cerrará el entrenamiento
@@ -739,7 +865,6 @@ export function ImmersiveWorkoutScreen({
         )}
       </div>
 
-      {/* Modal de confirmación */}
       {showFinishConfirm && (
         <div className="fixed inset-0 z-[70] flex items-end justify-center bg-black/70 backdrop-blur-sm">
           <div className="w-full max-w-md animate-scale-in rounded-t-3xl border-t border-zinc-800 bg-zinc-950 p-5 pb-8">
@@ -804,6 +929,7 @@ function BigEditableInput({
   unit,
   min,
   max,
+  integerOnly = false,
 }: {
   label: string;
   value: number;
@@ -812,64 +938,123 @@ function BigEditableInput({
   unit: string;
   min?: number;
   max?: number;
+  integerOnly?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
-  const [draft, setDraft] = useState(String(value));
+  const [draft, setDraft] = useState(() => formatDisplay(value, integerOnly));
+
+  const safeMin = min ?? 0;
+  const safeMax = max ?? Number.MAX_SAFE_INTEGER;
 
   useEffect(() => {
-    if (!focused) setDraft(String(value));
-  }, [value, focused]);
+    if (!focused) setDraft(formatDisplay(value, integerOnly));
+  }, [value, focused, integerOnly]);
 
   function commit(raw: string) {
-    const n = Number(raw);
-    if (isNaN(n)) {
-      setDraft(String(value));
+    const n = integerOnly
+      ? safeParseInteger(raw, value)
+      : safeParseNumber(raw, value);
+    const clamped = clamp(n, safeMin, safeMax);
+    onChange(clamped);
+    setDraft(formatDisplay(clamped, integerOnly));
+  }
+
+  function handleDraftChange(raw: string) {
+    if (integerOnly) {
+      if (isIntegerDraft(raw)) {
+        setDraft(raw);
+      }
       return;
     }
-    let v = n;
-    if (min !== undefined) v = Math.max(min, v);
-    if (max !== undefined) v = Math.min(max, v);
-    onChange(v);
-    setDraft(String(v));
+    setDraft(raw);
   }
+
+  function decrement() {
+    onChange(stepValue(value, step, -1, safeMin, safeMax));
+    hapticTick();
+  }
+
+  function increment() {
+    onChange(stepValue(value, step, 1, safeMin, safeMax));
+    hapticTick();
+  }
+
+  const decHandlers = useLongPress(decrement);
+  const incHandlers = useLongPress(increment);
+
+  const canDec = value > safeMin;
+  const canInc = value < safeMax;
 
   return (
     <div
-      className={`rounded-2xl border p-2.5 text-center transition-colors ${
+      className={`flex items-center gap-1.5 rounded-2xl border p-1.5 transition-colors ${
         focused
           ? 'border-cyan-500/60 bg-cyan-500/5'
           : 'border-zinc-800 bg-zinc-900/60'
       }`}
     >
-      <p className="text-[9px] uppercase tracking-widest text-zinc-500">
-        {label}
-      </p>
-      <div className="mt-1 flex items-center justify-center gap-0.5">
-        <input
-          type="number"
-          inputMode="decimal"
-          value={draft}
-          step={step}
-          onFocus={(e) => {
-            setFocused(true);
-            e.target.select();
-          }}
-          onBlur={(e) => {
-            setFocused(false);
-            commit(e.target.value);
-          }}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              (e.target as HTMLInputElement).blur();
-            }
-          }}
-          className="min-w-0 flex-1 bg-transparent text-center text-2xl font-extrabold tabular-nums text-zinc-100 outline-none"
-        />
-        {unit && (
-          <span className="text-xs font-medium text-zinc-500">{unit}</span>
-        )}
+      <button
+        type="button"
+        {...decHandlers}
+        disabled={!canDec}
+        aria-label={`Disminuir ${label} en ${step} ${unit}`}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-200 transition active:scale-[0.95] disabled:opacity-30"
+      >
+        <Minus size={16} />
+      </button>
+
+      <div className="flex min-w-0 flex-1 flex-col items-center">
+        <p className="text-[9px] uppercase tracking-widest text-zinc-500">
+          {label}
+        </p>
+        <div className="mt-0.5 flex items-baseline justify-center">
+          {unit && (
+            <span
+              aria-hidden
+              className="invisible shrink-0 text-[10px] font-medium"
+            >
+              {unit}
+            </span>
+          )}
+          <input
+            type="text"
+            inputMode={integerOnly ? 'numeric' : 'decimal'}
+            pattern={integerOnly ? '[0-9-]*' : undefined}
+            value={draft}
+            onFocus={(e) => {
+              setFocused(true);
+              e.target.select();
+            }}
+            onBlur={(e) => {
+              setFocused(false);
+              commit(e.target.value);
+            }}
+            onChange={(e) => handleDraftChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                (e.target as HTMLInputElement).blur();
+              }
+            }}
+            className="w-14 min-w-0 bg-transparent text-center text-xl font-extrabold tabular-nums text-zinc-100 outline-none"
+            aria-label={label}
+          />
+          {unit && (
+            <span className="ml-0.5 shrink-0 text-[10px] font-medium text-zinc-500">
+              {unit}
+            </span>
+          )}
+        </div>
       </div>
+
+      <button
+        type="button"
+        {...incHandlers}
+        disabled={!canInc}
+        aria-label={`Aumentar ${label} en ${step} ${unit}`}
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 text-zinc-200 transition active:scale-[0.95] disabled:opacity-30"
+      >
+        <Plus size={16} />
+      </button>
     </div>
   );
 }

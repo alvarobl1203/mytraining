@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useRoutines, type RoutineWithExercises } from '../hooks/useRoutines';
 import { useExercises } from '../hooks/useExercises';
+import { useUserPreferences } from '../hooks/useUserPreferences';
 import { DAY_LABELS } from '../lib/constants';
 import { ROUTINE_TEMPLATES } from '../lib/templates';
 import { CatalogScreen } from './CatalogScreen';
@@ -53,6 +54,7 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
     installTemplate,
   } = useRoutines(userId);
   const { exercises } = useExercises();
+  const { preferences } = useUserPreferences(userId);
 
   const [tab, setTab] = useState<'plans' | 'days'>('plans');
   const [expandedPlan, setExpandedPlan] = useState<string | null>(null);
@@ -141,7 +143,7 @@ export function RoutinesScreen({ userId, onStartWorkout }: Props) {
       target_reps_min: 8,
       target_reps_max: 12,
       target_rir: 2,
-      rest_seconds: 90,
+      rest_seconds: preferences.restDefaultSec,
     });
     if (error) throw error;
 

@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { sanitizePreferredTypes } from '../lib/disciplines';
 import type { Profile } from '../types';
+
+/** Fallback en segundos si la BD no tiene un valor (2 min 30 s). */
+const DEFAULT_REST_SEC = 150;
 
 function rowToProfile(row: Record<string, unknown>): Profile {
   return {
@@ -14,18 +18,18 @@ function rowToProfile(row: Record<string, unknown>): Profile {
     availableEquipment:
       (row.available_equipment as Profile['availableEquipment']) ?? [],
     onboardingCompleted: Boolean(row.onboarding_completed),
-    // NUEVOS campos v3
-    preferredTypes: (row.preferred_types as Profile['preferredTypes']) ?? [
-      'gym',
-      'calistenia',
-      'cardio',
-    ],
+    // Sanea cualquier valor no reconocido y aplica fallback si queda vacío.
+    preferredTypes: sanitizePreferredTypes(row.preferred_types),
     trainingMode:
       (row.training_mode as Profile['trainingMode']) ?? 'simple',
     enabledTechniques:
       (row.enabled_techniques as Profile['enabledTechniques']) ?? [],
     showTechniqueHints: Boolean(row.show_technique_hints),
     showVolumePanel: row.show_volume_panel !== false,
+    restDefaultSec:
+      row.rest_default_sec !== null && row.rest_default_sec !== undefined
+        ? Number(row.rest_default_sec)
+        : DEFAULT_REST_SEC,
   };
 }
 
@@ -77,6 +81,8 @@ export function useProfile(userId: string | null) {
         dbPatch.show_technique_hints = patch.showTechniqueHints;
       if (patch.showVolumePanel !== undefined)
         dbPatch.show_volume_panel = patch.showVolumePanel;
+      if (patch.restDefaultSec !== undefined)
+        dbPatch.rest_default_sec = patch.restDefaultSec;
 
       const { error } = await supabase
         .from('profiles')
