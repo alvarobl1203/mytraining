@@ -1,4 +1,15 @@
 // ===========================================================================
+// Acciones de archivo: portapapeles y descarga (web + Android nativo)
+// ===========================================================================
+// En web se usa <a download>. En Capacitor/Android el WebView ignora ese
+// atributo, así que se escribe en Directory.Cache y se abre Share nativo.
+// ===========================================================================
+
+import { Capacitor } from '@capacitor/core';
+import { Directory, Filesystem } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+
+// ===========================================================================
 // COPIAR AL PORTAPAPELES — funciona en móvil, PWA y Capacitor
 // ===========================================================================
 export async function copyToClipboard(text: string): Promise<void> {
@@ -55,10 +66,37 @@ export async function copyToClipboard(text: string): Promise<void> {
   }
 }
 
-// ===========================================================================
-// DESCARGAR BLOB — Android Chrome, Capacitor OK. iOS abre en pestaña.
-// ===========================================================================
-export function downloadBlob(blob: Blob, filename: string): void {
+function sanitizeFilename(filename: string): string {
+  const trimmed = filename.trim() || 'archivo';
+  return trimmed.replace(/[/\\?%*:|"<>]/g, '-');
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result;
+      if (typeof result !== 'string') {
+        reject(new Error('No se pudo convertir el archivo a base64'));
+        return;
+      }
+      const comma = result.indexOf(',');
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = () => {
+      reject(reader.error ?? new Error('FileReader falló al leer el blob'));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+function isShareCanceled(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return msg.includes('cancel') || msg.includes('cancelad');
+}
+
+function downloadBlobOnWeb(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -77,7 +115,54 @@ export function downloadBlob(blob: Blob, filename: string): void {
   }, 800);
 }
 
-export function downloadText(content: string, filename: string): void {
+async function shareBlobOnNative(blob: Blob, filename: string): Promise<void> {
+  const safeName = sanitizeFilename(filename);
+  const data = await blobToBase64(blob);
+  // Sin encoding: el plugin interpreta `data` como binario en base64.
+  const written = await Filesystem.writeFile({
+    path: safeName,
+    data,
+    directory: Directory.Cache,
+  });
+  const uri =
+    written.uri ||
+    (
+      await Filesystem.getUri({
+        path: safeName,
+        directory: Directory.Cache,
+      })
+    ).uri;
+
+  try {
+    await Share.share({
+      title: safeName,
+      dialogTitle: 'Compartir archivo',
+      files: [uri],
+    });
+  } catch (error) {
+    if (isShareCanceled(error)) return;
+    throw error;
+  }
+}
+
+// ===========================================================================
+// DESCARGAR BLOB — web: <a download>; nativo: Filesystem + Share
+// ===========================================================================
+export async function downloadBlob(
+  blob: Blob,
+  filename: string
+): Promise<void> {
+  if (Capacitor.isNativePlatform()) {
+    await shareBlobOnNative(blob, filename);
+    return;
+  }
+  downloadBlobOnWeb(blob, filename);
+}
+
+export async function downloadText(
+  content: string,
+  filename: string
+): Promise<void> {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-  downloadBlob(blob, filename);
+  await downloadBlob(blob, filename);
 }

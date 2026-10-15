@@ -10,8 +10,8 @@ Eres un senior full-stack (React 18 + TS estricto + Vite 5 + Tailwind + Supabase
 ## Stack verificado
 
 - Capacitor 8, `appId`: `com.alvaro.mytraining`
-- Activas: jspdf, lucide-react, dexie, dexie-react-hooks, fuse.js, recharts
-- Pendientes (pedir confirmación antes de instalar): `react-i18next`, `@capacitor/filesystem`, `@capacitor/share`
+- Activas: jspdf, lucide-react, dexie, dexie-react-hooks, fuse.js, recharts, `@capacitor/filesystem`, `@capacitor/share`
+- Pendientes (pedir confirmación antes de instalar): `react-i18next`
 - Prohibidas: `html-to-image`, cualquier confetti
 
 ## Proceso

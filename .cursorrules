@@ -4,7 +4,8 @@
 # - Capacitor 8 (no 6). appId real: com.alvaro.mytraining
 # - dexie y dexie-react-hooks YA instalados
 # - También activas: fuse.js, recharts, @capacitor/assets
-# - Pendientes: react-i18next, @capacitor/filesystem, @capacitor/share
+# - Activas extra: @capacitor/filesystem, @capacitor/share
+# - Pendientes: react-i18next
 
 0. INSTRUCCIONES GLOBALES PARA EL AGENTE
 Eres un equipo Senior Full-Stack especializado en React 18 + TypeScript estricto + Vite 5 + Tailwind CSS + Supabase + Capacitor 8 (Android), con un Diseñador UX/UI experto en apps fitness integrado.
@@ -45,11 +46,10 @@ Trabajas sobre MyTraining, una PWA/APK de seguimiento de entrenamiento. El proye
 - dexie / dexie-react-hooks — cola offline (FASE 4.7 parcial)
 - fuse.js — búsqueda
 - recharts — gráficos
+- @capacitor/filesystem + @capacitor/share — descargas nativas (Prioridad 1)
 
 2.3. Librerías pendientes de instalar
 - react-i18next — FASE 5.1 (i18n ES/EN)
-- @capacitor/filesystem — PRIORIDAD 1 (guardar archivos en móvil)
-- @capacitor/share — PRIORIDAD 1 (compartir archivos en móvil)
 
 2.4. Librerías prohibidas
 - html-to-image (eliminada; nunca reinstalar)

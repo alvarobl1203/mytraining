@@ -13,7 +13,11 @@ import {
   type ExportScope,
   type ExportContent,
 } from '../lib/exporters';
-import { copyToClipboard, downloadText } from '../lib/fileActions';
+import {
+  copyToClipboard,
+  downloadBlob,
+  downloadText,
+} from '../lib/fileActions';
 import { buildAnalyticsCsv, downloadCsv } from '../lib/csv';
 import { useToast } from '../lib/ui/ToastProvider';
 import type { Workout, WorkoutSet, Exercise } from '../types';
@@ -313,14 +317,14 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
               onClick={() =>
                 withBusy(
                   'csv',
-                  () => {
+                  async () => {
                     const csv = buildAnalyticsCsv(
                       workouts,
                       sets,
                       exercises,
                       currentScope()
                     );
-                    downloadCsv(csv, `${filename}.csv`);
+                    await downloadCsv(csv, `${filename}.csv`);
                   },
                   'CSV descargado'
                 )
@@ -389,7 +393,11 @@ export function ExportSheet({ workouts, sets, exercises, onClose }: Props) {
                       logoDataUrl,
                     });
 
-                    pdf.save(`${filename}.pdf`);
+                    const pdfBlob = pdf.output('blob');
+                    if (!(pdfBlob instanceof Blob)) {
+                      throw new Error('No se pudo generar el PDF');
+                    }
+                    await downloadBlob(pdfBlob, `${filename}.pdf`);
                   },
                   'PDF descargado'
                 )

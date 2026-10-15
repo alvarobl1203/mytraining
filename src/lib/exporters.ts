@@ -1,4 +1,5 @@
 import type { Workout, WorkoutSet, Exercise } from '../types';
+import { downloadBlob } from './fileActions';
 
 export interface ExportScope {
   kind: 'analytics' | 'week' | 'month' | 'range' | 'year' | 'all';
@@ -131,17 +132,20 @@ export function buildDataset(
 // ===========================================================================
 // Exportadores simples por formato (JSON y TXT)
 // ===========================================================================
-export function exportToJSON(data: unknown, filename: string) {
-  triggerDownload(
+export async function exportToJSON(
+  data: unknown,
+  filename: string
+): Promise<void> {
+  await downloadBlob(
     new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }),
     `${filename}.json`
   );
 }
 
-export function exportToText(
+export async function exportToText(
   data: ReturnType<typeof buildDataset>,
   filename: string
-) {
+): Promise<void> {
   const lines: string[] = [];
   lines.push(`MyTraining — Análisis exportado`);
   lines.push(`Fecha: ${new Date(data.generatedAt).toLocaleString('es-ES')}`);
@@ -169,19 +173,8 @@ export function exportToText(
       );
     });
   }
-  triggerDownload(
+  await downloadBlob(
     new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' }),
     `${filename}.txt`
   );
-}
-
-function triggerDownload(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
 }

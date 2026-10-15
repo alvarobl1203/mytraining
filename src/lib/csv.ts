@@ -11,6 +11,7 @@
 import type { Workout, WorkoutSet, Exercise } from '../types';
 import type { ExportScope } from './exporters';
 import { DAY_LABELS } from './constants';
+import { downloadBlob } from './fileActions';
 
 // ===========================================================================
 // Helpers
@@ -58,19 +59,15 @@ function fmtInt(value: number | null | undefined): string {
  * Descarga un CSV con BOM UTF-8 para que Excel detecte los acentos
  * correctamente al abrirlo con doble clic.
  */
-export function downloadCsv(content: string, filename: string): void {
+export async function downloadCsv(
+  content: string,
+  filename: string
+): Promise<void> {
   const BOM = '\uFEFF';
   const blob = new Blob([BOM + content], {
     type: 'text/csv;charset=utf-8',
   });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  await downloadBlob(blob, filename);
 }
 
 /**

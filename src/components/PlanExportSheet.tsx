@@ -9,7 +9,11 @@ import {
   Copy,
 } from 'lucide-react';
 import { DAY_LABELS } from '../lib/constants';
-import { copyToClipboard, downloadText } from '../lib/fileActions';
+import {
+  copyToClipboard,
+  downloadBlob,
+  downloadText,
+} from '../lib/fileActions';
 import { buildPlanCsv, downloadCsv } from '../lib/csv';
 import { useToast } from '../lib/ui/ToastProvider';
 import type { RoutineWithExercises } from '../hooks/useRoutines';
@@ -182,9 +186,9 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
             onClick={() =>
               withBusy(
                 'csv',
-                () => {
+                async () => {
                   const csv = buildPlanCsv(orderedRoutines, planName);
-                  downloadCsv(csv, `${filename}.csv`);
+                  await downloadCsv(csv, `${filename}.csv`);
                 },
                 'CSV descargado'
               )
@@ -237,7 +241,11 @@ export function PlanExportSheet({ routines, planName, onClose }: Props) {
                     })),
                     logoDataUrl,
                   });
-                  pdf.save(`${filename}.pdf`);
+                  const pdfBlob = pdf.output('blob');
+                  if (!(pdfBlob instanceof Blob)) {
+                    throw new Error('No se pudo generar el PDF');
+                  }
+                  await downloadBlob(pdfBlob, `${filename}.pdf`);
                 },
                 'PDF descargado'
               )

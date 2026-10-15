@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import type { Profile } from '../types';
+import { downloadBlob } from './fileActions';
 
 // ===========================================================================
 // Tipos
@@ -95,15 +96,8 @@ export async function exportBackup(userId: string): Promise<void> {
   const blob = new Blob([JSON.stringify(backup, null, 2)], {
     type: 'application/json;charset=utf-8',
   });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   const date = new Date().toISOString().slice(0, 10);
-  a.href = url;
-  a.download = `mytraining-backup-${date}.json`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  await downloadBlob(blob, `mytraining-backup-${date}.json`);
 }
 
 // ===========================================================================

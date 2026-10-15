@@ -64,3 +64,5 @@ coverage/
 
 # Bolt
 .bolt/
+.cursorrules
+.cursor/rules/mytraining-core.mdc

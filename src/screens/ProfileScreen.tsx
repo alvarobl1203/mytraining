@@ -171,7 +171,10 @@ export function ProfileScreen({
     setExporting(true);
     try {
       await exportBackup(profile.id);
-      toast.success('Backup exportado', 'Revisa tus descargas.');
+      toast.success(
+        'Backup exportado',
+        'Guárdalo o compártelo desde el menú del sistema.'
+      );
     } catch (e) {
       console.error(e);
       toast.error('Error al exportar el backup', 'Inténtalo de nuevo.');
