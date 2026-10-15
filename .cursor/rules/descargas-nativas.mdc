@@ -1,0 +1,21 @@
+---
+description: Descargas PDF/CSV/TXT en web vs Android Capacitor (prioridad 1).
+globs: "{src/lib/fileActions.ts,src/lib/exporters.ts,src/lib/csv.ts,src/lib/pdfBuilder.ts,src/lib/backup.ts,src/components/ExportSheet.tsx,src/components/PlanExportSheet.tsx,capacitor.config.ts,package.json}"
+alwaysApply: false
+---
+
+# Descargas de archivos
+
+En PC funciona. En WebView Android falla porque ignora `<a download>` + `URL.createObjectURL`.
+
+## Enfoque
+
+- Detectar con `Capacitor.isNativePlatform()`.
+- Web: mantener el comportamiento actual.
+- Nativo: `@capacitor/filesystem` (`Directory.Cache`) + `@capacitor/share` (`files: [uri]`).
+- Pedir confirmación antes de instalar `@capacitor/filesystem` y `@capacitor/share`.
+- `appId` real: `com.alvaro.mytraining`. Limpiar WebView: `adb shell pm clear com.alvaro.mytraining`.
+
+## Archivos típicos
+
+`src/lib/fileActions.ts`, `src/lib/exporters.ts`, `src/lib/csv.ts`, `src/lib/pdfBuilder.ts`, `src/components/ExportSheet.tsx`, `src/components/PlanExportSheet.tsx`, `capacitor.config.ts`, `package.json`.

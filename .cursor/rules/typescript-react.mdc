@@ -1,0 +1,35 @@
+---
+description: TypeScript estricto y patrones React de MyTraining.
+globs: src/**/*.{ts,tsx}
+alwaysApply: false
+---
+
+# TypeScript y React
+
+## TypeScript
+
+- Cero `any`. Usar `unknown` + type guards.
+- Cero `@ts-ignore` / `@ts-expect-error`.
+- Cero imports o variables sin usar (`noUnusedLocals` / `noUnusedParameters`).
+- Preferir `type` sobre `interface` salvo `extends`.
+- Preferir `Pick`, `Omit`, `Record`, `Partial`.
+- Estados con discriminated unions: `'idle' | 'loading' | 'success' | 'error'`.
+- Tipar parámetros. Sin `var`. Sin strings mágicos: extraer constante `SCREAMING_SNAKE`.
+
+## React
+
+- Solo functional components.
+- Orden de hooks: `useState` → `useEffect` → `useMemo` → `useCallback` → custom.
+- Dependencias completas. Nunca `eslint-disable`.
+- `useCallback` solo si se pasa a memo o es dep de otro hook.
+- Lógica derivada con `useMemo`, no `useEffect`.
+- No `console.log` en producción.
+
+## Nombres
+
+- Componentes: `PascalCase.tsx`. Lógica: `kebab-case.ts`. Hooks: `useCamelCase.ts`.
+- Componentes/tipos: PascalCase. Funciones: camelCase. Columnas BD: snake_case.
+
+## Límites
+
+- Componente ≤ 500 líneas. Archivo ≤ 800 líneas. Cabecera en español en archivos nuevos.

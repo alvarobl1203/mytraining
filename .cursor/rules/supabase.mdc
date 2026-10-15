@@ -1,0 +1,27 @@
+---
+description: Migraciones, RLS y soft-delete en Supabase de MyTraining.
+globs: supabase/**/*.sql
+alwaysApply: false
+---
+
+# Supabase / PostgreSQL
+
+## Datos
+
+- Nunca `DELETE` sin comprobar FKs (`workout_sets`, `routine_exercises`).
+- Con referencias: `is_active = false`. Sin referencias: DELETE solo con backup previo.
+- No `DROP TABLE` sin avisar. No tocar `auth.users`. No modificar migraciones ya aplicadas.
+
+## Migraciones nuevas
+
+- Nombre: `YYYYMMDDHHMMSS_descripcion_corta.sql`
+- Idempotentes, `BEGIN;` … `COMMIT;`, rollback comentado, queries de verificación al final.
+
+## RLS
+
+- RLS en todas las tablas. Políticas por `auth.uid() = user_id`.
+- Ejercicios públicos (`user_id IS NULL`) visibles para todos.
+
+## RPCs — no tocar sin avisar
+
+`delete_my_account()`, `handle_new_user()`, `set_updated_at()`.
